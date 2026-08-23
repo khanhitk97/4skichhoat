@@ -19,7 +19,7 @@ jobs:
         -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
         -arch arm64 \
         Speedhack.m \
-        -framework Foundation -framework CoreFoundation \
+        -framework Foundation -framework CoreFoundation -framework UIKit \
         -o Speedhack.dylib
 
     - name: Upload Dylib Artifact
