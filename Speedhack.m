@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #import <sys/time.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
@@ -20,7 +21,7 @@
 #endif
 
 // ==========================================
-// 1. EMBEDDED FISHHOOK IMPLEMENTATION
+// 1. EMBEDDED FISHHOOK
 // ==========================================
 #ifdef __LP64__
 typedef struct mach_header_64 mach_header_t;
@@ -171,26 +172,21 @@ static int rebind_symbols(struct rebinding rebindings[], size_t rebindings_nel) 
 }
 
 // ==========================================
-// 2. CORE SPEEDHACK ENGINE (UNIFIED TIMING)
+// 2. DYNAMIC SPEED CONTROL & HOOKS
 // ==========================================
-static float speed_factor = 5.0f; // Hệ số tốc độ x5
+static float speed_factor = 1.0f; // Mặc định tốc độ bình thường x1
 
-// Original C Function Pointers
 static int (*orig_gettimeofday)(struct timeval *tv, struct timezone *tz);
 static CFAbsoluteTime (*orig_CFAbsoluteTimeGetCurrent)(void);
 static uint64_t (*orig_mach_absolute_time)(void);
 
-// Time Sync Trackers
 static struct timeval last_real_tv;
 static struct timeval fake_tv;
-
 static CFAbsoluteTime last_real_cf = 0;
 static CFAbsoluteTime fake_cf = 0;
-
 static uint64_t last_real_mach = 0;
 static uint64_t fake_mach = 0;
 
-// 1. Hook gettimeofday
 int my_gettimeofday(struct timeval *tv, struct timezone *tz) {
     int ret = orig_gettimeofday(tv, tz);
     if (ret != 0 || tv == NULL) return ret;
@@ -219,7 +215,6 @@ int my_gettimeofday(struct timeval *tv, struct timezone *tz) {
     return ret;
 }
 
-// 2. Hook CFAbsoluteTimeGetCurrent
 CFAbsoluteTime my_CFAbsoluteTimeGetCurrent(void) {
     CFAbsoluteTime real_now = orig_CFAbsoluteTimeGetCurrent();
     if (last_real_cf == 0) {
@@ -233,7 +228,6 @@ CFAbsoluteTime my_CFAbsoluteTimeGetCurrent(void) {
     return fake_cf;
 }
 
-// 3. Hook mach_absolute_time (Dành cho game loop / Unity / Low level timers)
 uint64_t my_mach_absolute_time(void) {
     uint64_t real_now = orig_mach_absolute_time();
     if (last_real_mach == 0) {
@@ -248,33 +242,51 @@ uint64_t my_mach_absolute_time(void) {
 }
 
 // ==========================================
-// 3. OPTIMIZED OBJECTIVE-C HOOKS (NSDate)
+// 3. AUTO TRIGGER THEO MÀN HÌNH ĐƠN HÀNG
 // ==========================================
+static BOOL is_order_screen_active = NO;
 
-static id (*orig_NSDate_init)(id self, SEL _cmd);
-static id (*orig_NSDate_initWithTimeIntervalSinceReferenceDate)(id self, SEL _cmd, NSTimeInterval ti);
-
-static id my_NSDate_init(id self, SEL _cmd) {
-    return orig_NSDate_initWithTimeIntervalSinceReferenceDate(self, @selector(initWithTimeIntervalSinceReferenceDate:), my_CFAbsoluteTimeGetCurrent());
+static BOOL findOrderTextInView(UIView *view) {
+    if ([view isKindOfClass:[UILabel class]]) {
+        NSString *text = [(UILabel *)view text];
+        if ([text containsString:@"Vuốt để nhận đơn"] || [text containsString:@"Tài xế vui lòng"]) {
+            return YES;
+        }
+    }
+    for (UIView *sub in view.subviews) {
+        if (findOrderTextInView(sub)) return YES;
+    }
+    return NO;
 }
 
-static void swizzle_NSDate_methods(void) {
-    Class nsdateClass = [NSDate class];
-    
-    // Swizzle +[NSDate timeIntervalSinceReferenceDate]
-    Method origRefMethod = class_getClassMethod(nsdateClass, @selector(timeIntervalSinceReferenceDate));
-    if (origRefMethod) {
-        method_setImplementation(origRefMethod, (IMP)my_CFAbsoluteTimeGetCurrent);
-    }
-    
-    // Swizzle +[NSDate date]
-    Method origDateMethod = class_getClassMethod(nsdateClass, @selector(date));
-    if (origDateMethod) {
-        IMP newDateImp = imp_implementationWithBlock(^id(id self) {
-            return [NSDate dateWithTimeIntervalSinceReferenceDate:my_CFAbsoluteTimeGetCurrent()];
-        });
-        method_setImplementation(origDateMethod, newDateImp);
-    }
+static void checkOrderScreen(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *keyWindow = nil;
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            if (w.isKeyWindow) {
+                keyWindow = w;
+                break;
+            }
+        }
+        if (!keyWindow && [UIApplication sharedApplication].windows.count > 0) {
+            keyWindow = [UIApplication sharedApplication].windows.firstObject;
+        }
+
+        BOOL found = findOrderTextInView(keyWindow);
+        if (found && !is_order_screen_active) {
+            is_order_screen_active = YES;
+            // Đơn hàng xuất hiện: Chờ 3 giây thực (ở giây thứ 4 của timer 7s) rồi tăng tốc lên x5
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                if (is_order_screen_active) {
+                    speed_factor = 5.0f;
+                }
+            });
+        } else if (!found && is_order_screen_active) {
+            // Rời màn hình đơn hàng: Đưa tốc độ về x1
+            is_order_screen_active = NO;
+            speed_factor = 1.0f;
+        }
+    });
 }
 
 // ==========================================
@@ -282,14 +294,18 @@ static void swizzle_NSDate_methods(void) {
 // ==========================================
 __attribute__((constructor))
 static void initialize(void) {
-    // Rebind C Functions via Fishhook
     struct rebinding rebindings[] = {
         {"gettimeofday", (void *)my_gettimeofday, (void **)&orig_gettimeofday},
         {"CFAbsoluteTimeGetCurrent", (void *)my_CFAbsoluteTimeGetCurrent, (void **)&orig_CFAbsoluteTimeGetCurrent},
         {"mach_absolute_time", (void *)my_mach_absolute_time, (void **)&orig_mach_absolute_time}
     };
     rebind_symbols(rebindings, 3);
-    
-    // Apply Objective-C Swizzling for NSDate
-    swizzle_NSDate_methods();
+
+    // Vòng lặp định kỳ kiểm tra màn hình mỗi 0.5s
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        while (1) {
+            checkOrderScreen();
+            [NSThread sleepForTimeInterval:0.5];
+        }
+    });
 }
