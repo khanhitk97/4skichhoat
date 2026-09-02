@@ -18,7 +18,7 @@ jobs:
         clang -dynamiclib \
         -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
         -arch arm64 \
-        Speedhack.m \
+        fishhook.c Speedhack.m \
         -framework Foundation -framework CoreFoundation -framework UIKit \
         -o Speedhack.dylib
 
