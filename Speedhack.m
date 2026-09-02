@@ -3,7 +3,6 @@
 #import <sys/time.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
-#import <mach/mach_time.h>
 #import <dlfcn.h>
 #import <stdlib.h>
 #import <string.h>
@@ -22,7 +21,7 @@
 #endif
 
 // ==========================================
-// 1. EMBEDDED FISHHOOK
+// 1. EMBEDDED FISHHOOK IMPLEMENTATION
 // ==========================================
 #ifdef __LP64__
 typedef struct mach_header_64 mach_header_t;
@@ -173,18 +172,16 @@ static int rebind_symbols(struct rebinding rebindings[], size_t rebindings_nel) 
 }
 
 // ==========================================
-// 2. SPEED ENGINE
+// 2. SAFE SPEED ENGINE (KHÔNG ĐỤNG MACH_ABSOLUTE_TIME)
 // ==========================================
 static float speed_factor = 1.0f;
 static os_unfair_lock speed_lock = OS_UNFAIR_LOCK_INIT;
 
 static int (*orig_gettimeofday)(struct timeval *tv, struct timezone *tz) = NULL;
 static CFAbsoluteTime (*orig_CFAbsoluteTimeGetCurrent)(void) = NULL;
-static uint64_t (*orig_mach_absolute_time)(void) = NULL;
 
 static struct timeval last_real_tv = {0, 0}, fake_tv = {0, 0};
 static CFAbsoluteTime last_real_cf = 0, fake_cf = 0;
-static uint64_t last_real_mach = 0, fake_mach = 0;
 
 static void set_dynamic_speed(float factor) {
     os_unfair_lock_lock(&speed_lock);
@@ -194,8 +191,6 @@ static void set_dynamic_speed(float factor) {
         fake_tv = (struct timeval){0, 0};
         last_real_cf = 0;
         fake_cf = 0;
-        last_real_mach = 0;
-        fake_mach = 0;
     }
     os_unfair_lock_unlock(&speed_lock);
 }
@@ -254,27 +249,6 @@ CFAbsoluteTime my_CFAbsoluteTimeGetCurrent(void) {
     return result;
 }
 
-uint64_t my_mach_absolute_time(void) {
-    uint64_t real_now = orig_mach_absolute_time ? orig_mach_absolute_time() : mach_absolute_time();
-
-    os_unfair_lock_lock(&speed_lock);
-    if (speed_factor == 1.0f) {
-        os_unfair_lock_unlock(&speed_lock);
-        return real_now;
-    }
-
-    if (last_real_mach == 0) {
-        last_real_mach = real_now;
-        fake_mach = real_now;
-    } else {
-        fake_mach += (uint64_t)((real_now - last_real_mach) * speed_factor);
-        last_real_mach = real_now;
-    }
-    uint64_t result = fake_mach;
-    os_unfair_lock_unlock(&speed_lock);
-    return result;
-}
-
 // ==========================================
 // 3. SAFE ATTACHED DEBUG OVERLAY
 // ==========================================
@@ -287,7 +261,7 @@ uint64_t my_mach_absolute_time(void) {
     if ([hit isKindOfClass:[UIButton class]]) {
         return hit;
     }
-    return nil; // Cho phép bấm xuyên thấu toàn bộ giao diện trừ nút bấm
+    return nil; // Cho phép bấm xuyên thấu toàn bộ trừ các nút bấm
 }
 @end
 
@@ -357,7 +331,7 @@ uint64_t my_mach_absolute_time(void) {
         self.container.userInteractionEnabled = YES;
 
         self.statusBadge = [[UILabel alloc] initWithFrame:CGRectMake(10, 6, pWidth - 140, 24)];
-        self.statusBadge.text = @"⚡ Full UI Scanner | Active";
+        self.statusBadge.text = @"⚡ Mechanism 1 (Safe-Core)";
         self.statusBadge.textColor = [UIColor colorWithRed:0.2 green:1.0 blue:0.4 alpha:1.0];
         self.statusBadge.font = [UIFont boldSystemFontOfSize:11];
         [self.container addSubview:self.statusBadge];
@@ -401,7 +375,7 @@ uint64_t my_mach_absolute_time(void) {
 
     self.statusBadge.text = @"✅ Đã sao chép!";
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        self.statusBadge.text = @"⚡ Full UI Scanner | Active";
+        self.statusBadge.text = @"⚡ Mechanism 1 (Safe-Core)";
     });
 }
 
@@ -435,7 +409,7 @@ uint64_t my_mach_absolute_time(void) {
 @end
 
 // ==========================================
-// 4. FULL-SCREEN SMART COUNTDOWN WATCHER
+// 4. SMART COUNTDOWN WATCHER (CƠ CHẾ 1)
 // ==========================================
 @interface SmartCountdownWatcher : NSObject
 @property (nonatomic, strong) dispatch_source_t monitorTimer;
@@ -483,12 +457,10 @@ uint64_t my_mach_absolute_time(void) {
     return -1;
 }
 
-// Bóc tách đa tầng kể cả Private Ivar của Fabric / React Native
-- (NSString *)ultraExtractTextFromView:(UIView *)view {
+- (NSString *)safeExtractText:(UIView *)view {
     if (!view) return nil;
 
     @try {
-        // 1. Selector text tiêu chuẩn
         if ([view respondsToSelector:@selector(text)]) {
             #pragma clang diagnostic push
             #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
@@ -499,36 +471,16 @@ uint64_t my_mach_absolute_time(void) {
             }
         }
 
-        // 2. React Native AttributedText
         if ([view respondsToSelector:@selector(attributedText)]) {
             #pragma clang diagnostic push
             #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
             id obj = [view performSelector:@selector(attributedText)];
             #pragma clang diagnostic pop
             if ([obj isKindOfClass:[NSAttributedString class]]) {
-                NSString *str = [(NSAttributedString *)obj string];
-                if (str.length > 0) return str;
+                return [(NSAttributedString *)obj string];
             }
         }
 
-        // 3. Ivar nội bộ: _attributedText hoặc _text
-        Ivar ivarAttr = class_getInstanceVariable([view class], "_attributedText");
-        if (ivarAttr) {
-            id val = object_getIvar(view, ivarAttr);
-            if ([val isKindOfClass:[NSAttributedString class]]) {
-                return [(NSAttributedString *)val string];
-            }
-        }
-
-        Ivar ivarText = class_getInstanceVariable([view class], "_text");
-        if (ivarText) {
-            id val = object_getIvar(view, ivarText);
-            if ([val isKindOfClass:[NSString class]]) {
-                return (NSString *)val;
-            }
-        }
-
-        // 4. Accessibility
         if (view.accessibilityLabel.length > 0) return view.accessibilityLabel;
         if (view.accessibilityValue.length > 0) return view.accessibilityValue;
     } @catch (__unused NSException *e) {}
@@ -536,19 +488,17 @@ uint64_t my_mach_absolute_time(void) {
     return nil;
 }
 
-- (UIView *)searchAllViewsForCountdown:(UIView *)view depth:(NSInteger)depth {
+- (UIView *)inspectAndFindCountdownView:(UIView *)view depth:(NSInteger)depth {
     if (!view || view.isHidden || view.alpha < 0.01 || depth > 25) return nil;
     if ([SpeedDebugLogger shared].container && [view isDescendantOfView:[SpeedDebugLogger shared].container]) return nil;
 
-    NSString *content = [self ultraExtractTextFromView:view];
-    if (content.length > 0) {
+    NSString *content = [self safeExtractText:view];
+    if (content.length > 0 && content.length <= 15) {
         NSInteger sec = [self parseSecondFromString:content];
-        
-        // Log ra mọi view có chứa số từ 1 đến 15 để debug
-        if (sec >= 1 && sec <= 15) {
-            NSString *logMsg = [NSString stringWithFormat:@"🔍 [%@] W:%.0f H:%.0f -> \"%@\" (sec: %ld)",
-                                NSStringFromClass([view class]), view.frame.size.width, view.frame.size.height, content, (long)sec];
-            [[SpeedDebugLogger shared] appendLog:logMsg];
+        if (sec >= 1 && sec <= 10) {
+            NSString *logEntry = [NSString stringWithFormat:@"🎯 [%@] -> \"%@\" (sec: %ld)",
+                                  NSStringFromClass([view class]), content, (long)sec];
+            [[SpeedDebugLogger shared] appendLog:logEntry];
 
             if (sec >= 3 && sec <= 8) {
                 return view;
@@ -558,7 +508,7 @@ uint64_t my_mach_absolute_time(void) {
 
     NSArray<UIView *> *safeSubviews = [view.subviews copy];
     for (UIView *sub in safeSubviews) {
-        UIView *found = [self searchAllViewsForCountdown:sub depth:depth + 1];
+        UIView *found = [self inspectAndFindCountdownView:sub depth:depth + 1];
         if (found) return found;
     }
     return nil;
@@ -580,12 +530,12 @@ uint64_t my_mach_absolute_time(void) {
         self.lockedCountdownView = nil;
         self.lastSeenSecond = -1;
         [[SpeedDebugLogger shared] updateStatus:@"⚡ Speed: 1.0x | COOLDOWN" isWarning:YES];
-        [[SpeedDebugLogger shared] appendLog:@">>> [RESET] Về lại tốc độ 1.0x gốc."];
+        [[SpeedDebugLogger shared] appendLog:@">>> [RESET] Về tốc độ 1.0x gốc."];
     });
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         self.isCooldown = NO;
-        [[SpeedDebugLogger shared] updateStatus:@"⚡ Full UI Scanner | Active" isWarning:NO];
+        [[SpeedDebugLogger shared] updateStatus:@"⚡ Mechanism 1 (Safe-Core)" isWarning:NO];
     });
 }
 
@@ -600,7 +550,7 @@ uint64_t my_mach_absolute_time(void) {
         }
 
         @try {
-            // FAST-PATH: Nếu đã khóa trúng View đếm
+            // Fast-path: Khi đã khóa trúng View đếm
             if (self.lockedCountdownView) {
                 if (self.lockedCountdownView.isHidden || !self.lockedCountdownView.superview) {
                     self.lockedCountdownView = nil;
@@ -608,7 +558,7 @@ uint64_t my_mach_absolute_time(void) {
                     return;
                 }
 
-                NSString *txt = [self ultraExtractTextFromView:self.lockedCountdownView];
+                NSString *txt = [self safeExtractText:self.lockedCountdownView];
                 NSInteger currentSec = [self parseSecondFromString:txt];
 
                 [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@"[FAST-READ] View đếm: %@", txt]];
@@ -624,13 +574,13 @@ uint64_t my_mach_absolute_time(void) {
                 return;
             }
 
-            // SLOW-PATH: Quét tìm trên toàn bộ KeyWindow
+            // Slow-path: Quét tìm view đếm ngược
             UIWindow *win = [SpeedDebugLogger findKeyWindow];
             if (!win) return;
 
-            UIView *found = [self searchAllViewsForCountdown:win depth:0];
+            UIView *found = [self inspectAndFindCountdownView:win depth:0];
             if (found) {
-                NSString *txt = [self ultraExtractTextFromView:found];
+                NSString *txt = [self safeExtractText:found];
                 NSInteger sec = [self parseSecondFromString:txt];
 
                 if (sec == 3) {
@@ -670,23 +620,25 @@ uint64_t my_mach_absolute_time(void) {
 @end
 
 // ==========================================
-// 5. INITIALIZER
+// 5. INITIALIZER AN TOÀN TUYỆT ĐỐI
 // ==========================================
 __attribute__((constructor))
 static void initialize_smart_speedhack(void) {
     orig_gettimeofday = (int (*)(struct timeval *, struct timezone *))dlsym(RTLD_DEFAULT, "gettimeofday");
     orig_CFAbsoluteTimeGetCurrent = (CFAbsoluteTime (*)(void))dlsym(RTLD_DEFAULT, "CFAbsoluteTimeGetCurrent");
-    orig_mach_absolute_time = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "mach_absolute_time");
 
     struct rebinding rebindings[] = {
         {"gettimeofday", (void *)my_gettimeofday, (void **)&orig_gettimeofday},
-        {"CFAbsoluteTimeGetCurrent", (void *)my_CFAbsoluteTimeGetCurrent, (void **)&orig_CFAbsoluteTimeGetCurrent},
-        {"mach_absolute_time", (void *)my_mach_absolute_time, (void **)&orig_mach_absolute_time}
+        {"CFAbsoluteTimeGetCurrent", (void *)my_CFAbsoluteTimeGetCurrent, (void **)&orig_CFAbsoluteTimeGetCurrent}
     };
-    rebind_symbols(rebindings, 3);
+    rebind_symbols(rebindings, 2);
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // Lắng nghe sự kiện app hoàn tất nạp giao diện rồi mới khởi chạy UI & Scanner
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification * _Nonnull note) {
         [[SpeedDebugLogger shared] setupUI];
         [[SmartCountdownWatcher shared] startWatcher];
-    });
+    }];
 }
