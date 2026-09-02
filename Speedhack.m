@@ -22,7 +22,7 @@
 #endif
 
 // ==========================================
-// 1. EMBEDDED FISHHOOK
+// 1. EMBEDDED FISHHOOK IMPLEMENTATION
 // ==========================================
 #ifdef __LP64__
 typedef struct mach_header_64 mach_header_t;
@@ -288,26 +288,28 @@ static void swizzle_NSDate_methods(void) {
 }
 
 // ==========================================
-// 3. FLOATING DEBUG LOGGER OVERLAY
+// 3. OVERLAY LOGGER (TƯƠNG THÍCH IOS 18.4)
 // ==========================================
-@interface DebugOverlayWindow : UIWindow
+@interface OverlayContainerView : UIView
 @end
 
-@implementation DebugOverlayWindow
+@implementation OverlayContainerView
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     UIView *hit = [super hitTest:point withEvent:event];
-    if (hit == self || hit == self.rootViewController.view) {
-        return nil; // Cho phép bấm xuyên qua màn hình app chính
+    if (hit == self) {
+        return nil; // Cho phép bấm xuyên qua ứng dụng
     }
     return hit;
 }
 @end
 
 @interface SpeedDebugLogger : NSObject
-@property (nonatomic, strong) DebugOverlayWindow *window;
+@property (nonatomic, strong) UIWindow *window;
+@property (nonatomic, strong) OverlayContainerView *container;
 @property (nonatomic, strong) UITextView *logTextView;
 @property (nonatomic, strong) NSMutableArray<NSString *> *logLines;
 @property (nonatomic, strong) UILabel *statusBadge;
+@property (nonatomic, assign) BOOL isMounted;
 
 + (instancetype)shared;
 - (void)setupUI;
@@ -323,69 +325,120 @@ static void swizzle_NSDate_methods(void) {
     dispatch_once(&onceToken, ^{
         inst = [[SpeedDebugLogger alloc] init];
         inst.logLines = [NSMutableArray array];
+        inst.isMounted = NO;
     });
     return inst;
 }
 
++ (UIWindowScene *)getActiveScene {
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
+            return (UIWindowScene *)scene;
+        }
+    }
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]]) {
+            return (UIWindowScene *)scene;
+        }
+    }
+    return nil;
+}
+
++ (UIWindow *)findAppKeyWindow {
+    UIWindowScene *scene = [self getActiveScene];
+    if (scene) {
+        for (UIWindow *w in scene.windows) {
+            if (w.isKeyWindow && ![w isKindOfClass:NSClassFromString(@"OverlayWindow")]) return w;
+            if (!w.isHidden) return w;
+        }
+    }
+    for (UIWindow *w in [UIApplication sharedApplication].windows) {
+        if (w.isKeyWindow) return w;
+        if (!w.isHidden) return w;
+    }
+    return nil;
+}
+
 - (void)setupUI {
+    if (self.isMounted) return;
+
     dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.isMounted) return;
+
+        UIWindowScene *scene = [SpeedDebugLogger getActiveScene];
         CGRect screen = [UIScreen mainScreen].bounds;
-        self.window = [[DebugOverlayWindow alloc] initWithFrame:screen];
-        self.window.windowLevel = UIWindowLevelAlert + 1000.0;
-        self.window.backgroundColor = [UIColor clearColor];
-        self.window.hidden = NO;
 
-        UIViewController *vc = [[UIViewController alloc] init];
-        vc.view.backgroundColor = [UIColor clearColor];
-        self.window.rootViewController = vc;
-
-        // Bảng chứa log nổi góc trên bên phải
         CGFloat pWidth = screen.size.width - 24;
         CGFloat pHeight = 220;
-        UIView *container = [[UIView alloc] initWithFrame:CGRectMake(12, 45, pWidth, pHeight)];
-        container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
-        container.layer.cornerRadius = 10;
-        container.layer.borderWidth = 1.0;
-        container.layer.borderColor = [UIColor colorWithRed:0.2 green:0.8 blue:1.0 alpha:0.8].CGColor;
-        container.clipsToBounds = YES;
 
-        // Thanh tiêu đề trạng thái
+        self.container = [[OverlayContainerView alloc] initWithFrame:CGRectMake(12, 50, pWidth, pHeight)];
+        self.container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+        self.container.layer.cornerRadius = 10;
+        self.container.layer.borderWidth = 1.5;
+        self.container.layer.borderColor = [UIColor colorWithRed:0.0 green:0.8 blue:1.0 alpha:0.9].CGColor;
+        self.container.clipsToBounds = YES;
+
         self.statusBadge = [[UILabel alloc] initWithFrame:CGRectMake(10, 6, pWidth - 140, 24)];
         self.statusBadge.text = @"⚡ Speed: 1.0x | IDLE";
-        self.statusBadge.textColor = [UIColor greenColor];
+        self.statusBadge.textColor = [UIColor colorWithRed:0.2 green:1.0 blue:0.4 alpha:1.0];
         self.statusBadge.font = [UIFont boldSystemFontOfSize:12];
-        [container addSubview:self.statusBadge];
+        [self.container addSubview:self.statusBadge];
 
-        // Nút Copy Log
         UIButton *copyBtn = [UIButton buttonWithType:UIButtonTypeCustom];
         copyBtn.frame = CGRectMake(pWidth - 125, 5, 60, 26);
-        copyBtn.backgroundColor = [UIColor colorWithRed:0.2 green:0.4 blue:0.9 alpha:0.9];
+        copyBtn.backgroundColor = [UIColor colorWithRed:0.2 green:0.4 blue:0.9 alpha:0.95];
         copyBtn.layer.cornerRadius = 5;
         [copyBtn setTitle:@"📋 Copy" forState:UIControlStateNormal];
         copyBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11];
         [copyBtn addTarget:self action:@selector(copyLogToClipboard) forControlEvents:UIControlEventTouchUpInside];
-        [container addSubview:copyBtn];
+        [self.container addSubview:copyBtn];
 
-        // Nút Clear Log
         UIButton *clearBtn = [UIButton buttonWithType:UIButtonTypeCustom];
         clearBtn.frame = CGRectMake(pWidth - 60, 5, 50, 26);
-        clearBtn.backgroundColor = [UIColor colorWithRed:0.8 green:0.2 blue:0.2 alpha:0.9];
+        clearBtn.backgroundColor = [UIColor colorWithRed:0.85 green:0.2 blue:0.2 alpha:0.95];
         clearBtn.layer.cornerRadius = 5;
         [clearBtn setTitle:@"🧹 Clear" forState:UIControlStateNormal];
         clearBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11];
         [clearBtn addTarget:self action:@selector(clearLogs) forControlEvents:UIControlEventTouchUpInside];
-        [container addSubview:clearBtn];
+        [self.container addSubview:clearBtn];
 
-        // Vùng hiển thị Text
         self.logTextView = [[UITextView alloc] initWithFrame:CGRectMake(5, 35, pWidth - 10, pHeight - 40)];
         self.logTextView.backgroundColor = [UIColor clearColor];
         self.logTextView.textColor = [UIColor whiteColor];
         self.logTextView.font = [UIFont fontWithName:@"Menlo" size:10] ?: [UIFont systemFontOfSize:10];
         self.logTextView.editable = NO;
         self.logTextView.selectable = NO;
-        [container addSubview:self.logTextView];
+        [self.container addSubview:self.logTextView];
 
-        [vc.view addSubview:container];
+        // 1. Phương án ưu tiên trên iOS 18: Gắn thông qua UIWindowScene
+        if (scene) {
+            self.window = [[UIWindow alloc] initWithWindowScene:scene];
+            self.window.frame = screen;
+            self.window.windowLevel = UIWindowLevelAlert + 1000.0;
+            self.window.backgroundColor = [UIColor clearColor];
+            
+            UIViewController *vc = [[UIViewController alloc] init];
+            vc.view.backgroundColor = [UIColor clearColor];
+            [vc.view addSubview:self.container];
+            
+            self.window.rootViewController = vc;
+            self.window.hidden = NO;
+            self.isMounted = YES;
+        }
+
+        // 2. Phương án dự phòng: Gắn trực tiếp vào RootViewController của App
+        if (!self.isMounted) {
+            UIWindow *appWin = [SpeedDebugLogger findAppKeyWindow];
+            if (appWin && appWin.rootViewController.view) {
+                [appWin.rootViewController.view addSubview:self.container];
+                [appWin.rootViewController.view bringSubviewToFront:self.container];
+                self.isMounted = YES;
+            }
+        }
+
+        if (self.isMounted) {
+            [self appendLog:@"[SYSTEM] Đã khởi tạo Debug Logger trên iOS 18.4 thành công."];
+        }
     });
 }
 
@@ -413,13 +466,12 @@ static void swizzle_NSDate_methods(void) {
 
 - (void)appendLog:(NSString *)log {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (self.logLines.count > 40) {
+        if (self.logLines.count > 50) {
             [self.logLines removeObjectAtIndex:0];
         }
         [self.logLines addObject:log];
         self.logTextView.text = [self.logLines componentsJoinedByString:@"\n"];
-        
-        // Tự cuộn xuống dưới cùng
+
         if (self.logTextView.text.length > 0) {
             NSRange bottom = NSMakeRange(self.logTextView.text.length - 1, 1);
             [self.logTextView scrollRangeToVisible:bottom];
@@ -430,7 +482,7 @@ static void swizzle_NSDate_methods(void) {
 @end
 
 // ==========================================
-// 4. SMART WATCHER + DETAILED DIAGNOSTICS
+// 4. SMART WATCHER & ENGINE COUNTDOWN
 // ==========================================
 @interface SmartCountdownWatcher : NSObject
 @property (nonatomic, strong) dispatch_source_t monitorTimer;
@@ -456,20 +508,6 @@ static void swizzle_NSDate_methods(void) {
         inst.isCooldown = NO;
     });
     return inst;
-}
-
-+ (UIWindow *)getKeyWindow {
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
-            for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-                if (window.isKeyWindow && ![window isKindOfClass:[DebugOverlayWindow class]]) return window;
-            }
-        }
-    }
-    for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if (w.isKeyWindow && ![w isKindOfClass:[DebugOverlayWindow class]]) return w;
-    }
-    return [UIApplication sharedApplication].windows.firstObject;
 }
 
 - (NSInteger)parseSecondFromString:(NSString *)rawText {
@@ -511,16 +549,14 @@ static void swizzle_NSDate_methods(void) {
     return nil;
 }
 
-// Quét đệ quy và log mọi đoạn text ngắn (dưới 20 ký tự) lên màn hình
 - (UIView *)inspectAndFindCountdownView:(UIView *)view depth:(NSInteger)depth {
-    if (!view || view.isHidden || view.alpha < 0.01 || depth > 20) return nil;
-    if ([view isDescendantOfView:[SpeedDebugLogger shared].window]) return nil;
+    if (!view || view.isHidden || view.alpha < 0.01 || depth > 25) return nil;
+    if ([view isDescendantOfView:[SpeedDebugLogger shared].container]) return nil;
 
     NSString *content = [self extractTextFromView:view];
     if (content.length > 0 && content.length <= 20) {
         NSInteger sec = [self parseSecondFromString:content];
         
-        // Ghi lại vào log chẩn đoán
         NSString *className = NSStringFromClass([view class]);
         NSString *logEntry = [NSString stringWithFormat:@"[%@] -> \"%@\" (sec: %ld)", className, content, (long)sec];
         [[SpeedDebugLogger shared] appendLog:logEntry];
@@ -570,7 +606,12 @@ static void swizzle_NSDate_methods(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.isBurstActive || self.isCooldown) return;
 
-        // FAST-PATH: Nếu đã khóa được mục tiêu
+        // Nếu bảng log chưa mount được do app khởi động trễ, thử mount lại
+        if (![SpeedDebugLogger shared].isMounted) {
+            [[SpeedDebugLogger shared] setupUI];
+        }
+
+        // FAST-PATH: Nếu đã khóa View mục tiêu
         if (self.lockedCountdownView) {
             if (self.lockedCountdownView.isHidden || !self.lockedCountdownView.superview) {
                 [[SpeedDebugLogger shared] appendLog:@"[LOCK LOST] View đếm đã biến mất khỏi màn hình."];
@@ -596,7 +637,7 @@ static void swizzle_NSDate_methods(void) {
         }
 
         // SLOW-PATH: Quét tìm view đếm ngược
-        UIWindow *win = [SmartCountdownWatcher getKeyWindow];
+        UIWindow *win = [SpeedDebugLogger findAppKeyWindow];
         if (!win) return;
 
         UIView *found = [self inspectAndFindCountdownView:win depth:0];
@@ -620,7 +661,6 @@ static void swizzle_NSDate_methods(void) {
     dispatch_queue_t queue = dispatch_queue_create("com.speedhack.smartwatcher", DISPATCH_QUEUE_SERIAL);
     self.monitorTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
 
-    // Quét chu kỳ 120ms
     dispatch_source_set_timer(self.monitorTimer,
                               dispatch_time(DISPATCH_TIME_NOW, 0),
                               (uint64_t)(0.12 * NSEC_PER_SEC),
@@ -649,7 +689,17 @@ static void initialize_smart_speedhack(void) {
     rebind_symbols(rebindings, 3);
     swizzle_NSDate_methods();
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // Lắng nghe sự kiện app active để mount UI an toàn trên iOS 18
+    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                      object:nil
+                                                       queue:[NSOperationQueue mainQueue]
+                                                  usingBlock:^(NSNotification * _Nonnull note) {
+        [[SpeedDebugLogger shared] setupUI];
+        [[SmartCountdownWatcher shared] startWatcher];
+    }];
+
+    // Hẹn giờ dự phòng chạy sau 2 giây nếu app không phát Notification
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[SpeedDebugLogger shared] setupUI];
         [[SmartCountdownWatcher shared] startWatcher];
     });
