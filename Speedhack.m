@@ -175,7 +175,7 @@ static int rebind_symbols(struct rebinding rebindings[], size_t rebindings_nel) 
 // ==========================================
 // 2. SPEED ENGINE (DYNAMIC SPEED FACTOR)
 // ==========================================
-static float speed_factor = 1.0f; // Tốc độ mặc định là 1.0x
+static float speed_factor = 1.0f;
 static os_unfair_lock speed_lock = OS_UNFAIR_LOCK_INIT;
 
 static int (*orig_gettimeofday)(struct timeval *tv, struct timezone *tz);
@@ -330,7 +330,6 @@ static void swizzle_NSDate_methods(void) {
     return [UIApplication sharedApplication].windows.firstObject;
 }
 
-// Trích xuất số nguyên từ chuỗi (hỗ trợ các dạng: "7", "07", "7s", "7 s")
 - (NSInteger)parseSecondFromString:(NSString *)rawText {
     if (!rawText || rawText.length == 0 || rawText.length > 5) return -1;
     NSString *clean = [[rawText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
@@ -360,7 +359,6 @@ static void swizzle_NSDate_methods(void) {
     return nil;
 }
 
-// Pha 1: Quét nhẹ tìm đúng View đang đếm lùi trong khoảng 7 -> 4
 - (UIView *)findCountdownViewInHierarchy:(UIView *)view {
     if (!view || view.isHidden || view.alpha < 0.01) return nil;
 
@@ -377,38 +375,36 @@ static void swizzle_NSDate_methods(void) {
     return nil;
 }
 
-// Pha 2: Kích hoạt tăng tốc đúng giây thứ 3 và tự tắt sau 2 giây
 - (void)triggerSpeedBurst {
     if (self.isBurstActive || self.isCooldown) return;
 
     self.isBurstActive = YES;
     self.isCooldown = YES;
 
-    // BẬT tốc độ x5.0 tại giây thứ 3
+    // Kích hoạt x5.0 khi chạm giây thứ 3
     set_dynamic_speed(5.0f);
 
-    // TẮT (trả về 1.0x chuẩn gốc) sau đúng 2.0 giây
+    // Tắt về 1.0x sau 2.0 giây
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         set_dynamic_speed(1.0f);
         self.isBurstActive = NO;
-        self.lockedCountdownView = nil; // Hủy khóa view cũ
+        self.lockedCountdownView = nil;
         self.lastSeenSecond = -1;
     });
 
-    // Cooldown 5.0 giây chống kích hoạt lặp
+    // Khóa tránh kích hoạt lặp
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         self.isCooldown = NO;
     });
 }
 
-// Luồng kiểm tra thông minh
 - (void)tickCheck {
     if (self.isBurstActive || self.isCooldown) return;
 
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.isBurstActive || self.isCooldown) return;
 
-        // FAST-PATH: Nếu đã khóa được View, chỉ đọc thẳng View này (Độ phức tạp O(1))
+        // Đọc trực tiếp từ con trỏ đã khóa
         if (self.lockedCountdownView) {
             if (self.lockedCountdownView.isHidden || !self.lockedCountdownView.superview) {
                 self.lockedCountdownView = nil;
@@ -424,14 +420,13 @@ static void swizzle_NSDate_methods(void) {
             } else if (currentSec > 0) {
                 self.lastSeenSecond = currentSec;
             } else {
-                // View đã đổi nội dung hoặc không còn là số đếm -> Mở khóa
                 self.lockedCountdownView = nil;
                 self.lastSeenSecond = -1;
             }
             return;
         }
 
-        // SLOW-PATH: Quét nhẹ tìm View chứa đếm ngược khi chưa khóa
+        // Quét tìm view đếm ngược khi chưa khóa
         UIWindow *win = [SmartCountdownWatcher getKeyWindow];
         if (!win) return;
 
@@ -441,11 +436,9 @@ static void swizzle_NSDate_methods(void) {
             NSInteger sec = [self parseSecondFromString:txt];
 
             if (sec == 3) {
-                // Trường hợp nổ đơn chạm thẳng số 3
                 self.lockedCountdownView = found;
                 [self triggerSpeedBurst];
             } else if (sec > 3) {
-                // Đã bắt được nhịp đếm từ 7, 6, 5, 4 -> Khóa mục tiêu
                 self.lockedCountdownView = found;
                 self.lastSeenSecond = sec;
             }
@@ -457,7 +450,6 @@ static void swizzle_NSDate_methods(void) {
     dispatch_queue_t queue = dispatch_queue_create("com.speedhack.smartwatcher", DISPATCH_QUEUE_SERIAL);
     self.monitorTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
 
-    // Quét mỗi 80ms (đảm bảo không trễ khung hình số 3)
     dispatch_source_set_timer(self.monitorTimer,
                               dispatch_time(DISPATCH_TIME_NOW, 0),
                               (uint64_t)(0.08 * NSEC_PER_SEC),
