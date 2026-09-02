@@ -22,7 +22,7 @@
 #endif
 
 // ==========================================
-// 1. EMBEDDED FISHHOOK IMPLEMENTATION
+// 1. EMBEDDED FISHHOOK
 // ==========================================
 #ifdef __LP64__
 typedef struct mach_header_64 mach_header_t;
@@ -178,9 +178,9 @@ static int rebind_symbols(struct rebinding rebindings[], size_t rebindings_nel) 
 static float speed_factor = 1.0f;
 static os_unfair_lock speed_lock = OS_UNFAIR_LOCK_INIT;
 
-static int (*orig_gettimeofday)(struct timeval *tv, struct timezone *tz);
-static CFAbsoluteTime (*orig_CFAbsoluteTimeGetCurrent)(void);
-static uint64_t (*orig_mach_absolute_time)(void);
+static int (*orig_gettimeofday)(struct timeval *tv, struct timezone *tz) = NULL;
+static CFAbsoluteTime (*orig_CFAbsoluteTimeGetCurrent)(void) = NULL;
+static uint64_t (*orig_mach_absolute_time)(void) = NULL;
 
 static struct timeval last_real_tv = {0, 0}, fake_tv = {0, 0};
 static CFAbsoluteTime last_real_cf = 0, fake_cf = 0;
@@ -201,6 +201,7 @@ static void set_dynamic_speed(float factor) {
 }
 
 int my_gettimeofday(struct timeval *tv, struct timezone *tz) {
+    if (!orig_gettimeofday) return gettimeofday(tv, tz);
     int ret = orig_gettimeofday(tv, tz);
     if (ret != 0 || !tv) return ret;
 
@@ -233,7 +234,7 @@ int my_gettimeofday(struct timeval *tv, struct timezone *tz) {
 }
 
 CFAbsoluteTime my_CFAbsoluteTimeGetCurrent(void) {
-    CFAbsoluteTime real_now = orig_CFAbsoluteTimeGetCurrent();
+    CFAbsoluteTime real_now = orig_CFAbsoluteTimeGetCurrent ? orig_CFAbsoluteTimeGetCurrent() : CFAbsoluteTimeGetCurrent();
 
     os_unfair_lock_lock(&speed_lock);
     if (speed_factor == 1.0f) {
@@ -254,7 +255,7 @@ CFAbsoluteTime my_CFAbsoluteTimeGetCurrent(void) {
 }
 
 uint64_t my_mach_absolute_time(void) {
-    uint64_t real_now = orig_mach_absolute_time();
+    uint64_t real_now = orig_mach_absolute_time ? orig_mach_absolute_time() : mach_absolute_time();
 
     os_unfair_lock_lock(&speed_lock);
     if (speed_factor == 1.0f) {
@@ -287,18 +288,17 @@ static void swizzle_NSDate_methods(void) {
     }
 }
 
-// Hàm đo thời gian Monotonic độ chính xác cao bằng Mach Kernel (Không phụ thuộc QuartzCore)
 static double get_real_monotonic_seconds(void) {
-    static mach_timebase_info_data_t tb;
+    static mach_timebase_info_data_t tb = {0, 0};
     if (tb.denom == 0) {
         mach_timebase_info(&tb);
     }
-    uint64_t t = mach_absolute_time();
+    uint64_t t = orig_mach_absolute_time ? orig_mach_absolute_time() : mach_absolute_time();
     return (double)t * ((double)tb.numer / (double)tb.denom) / 1e9;
 }
 
 // ==========================================
-// 3. PASS-THROUGH DEBUG LOGGER
+// 3. PASS-THROUGH DEBUG LOGGER (AN TOÀN TUYỆT ĐỐI)
 // ==========================================
 @interface SpeedDebugLogger : NSObject
 @property (nonatomic, strong) UIWindow *window;
@@ -322,14 +322,23 @@ static double get_real_monotonic_seconds(void) {
 @implementation PassThroughWindow
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     SpeedDebugLogger *logger = [SpeedDebugLogger shared];
-    if (logger.btnCopy && !logger.btnCopy.isHidden) {
-        CGPoint pt = [self convertPoint:point toView:logger.btnCopy];
-        if ([logger.btnCopy pointInside:pt withEvent:event]) return logger.btnCopy;
+    
+    // FIX CRASH: Chỉ convertPoint khi nút bấm đã thực sự nằm trong chính Window này
+    if (logger.btnCopy && !logger.btnCopy.isHidden && logger.btnCopy.window == self) {
+        @try {
+            CGPoint pt = [self convertPoint:point toView:logger.btnCopy];
+            if ([logger.btnCopy pointInside:pt withEvent:event]) return logger.btnCopy;
+        } @catch (__unused NSException *e) {}
     }
-    if (logger.btnClear && !logger.btnClear.isHidden) {
-        CGPoint pt = [self convertPoint:point toView:logger.btnClear];
-        if ([logger.btnClear pointInside:pt withEvent:event]) return logger.btnClear;
+    
+    if (logger.btnClear && !logger.btnClear.isHidden && logger.btnClear.window == self) {
+        @try {
+            CGPoint pt = [self convertPoint:point toView:logger.btnClear];
+            if ([logger.btnClear pointInside:pt withEvent:event]) return logger.btnClear;
+        } @catch (__unused NSException *e) {}
     }
+    
+    // Mọi vị trí khác trả về nil để lọt chạm xuống app chính
     return nil;
 }
 @end
@@ -505,6 +514,7 @@ static double get_real_monotonic_seconds(void) {
 @property (nonatomic, assign) BOOL isBurstActive;
 @property (nonatomic, assign) BOOL isCooldown;
 @property (nonatomic, assign) BOOL didTriggerForCurrentOrder;
+@property (nonatomic, assign) BOOL isWatcherRunning;
 
 + (instancetype)shared;
 - (void)startWatcher;
@@ -523,44 +533,50 @@ static double get_real_monotonic_seconds(void) {
         inst.isBurstActive = NO;
         inst.isCooldown = NO;
         inst.didTriggerForCurrentOrder = NO;
+        inst.isWatcherRunning = NO;
     });
     return inst;
 }
 
 - (NSString *)extractTextSafely:(UIView *)view {
     if (!view) return nil;
-    if ([view respondsToSelector:@selector(text)]) {
-        #pragma clang diagnostic push
-        #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-        id obj = [view performSelector:@selector(text)];
-        #pragma clang diagnostic pop
-        if ([obj isKindOfClass:[NSString class]] && [(NSString *)obj length] > 0) {
-            return (NSString *)obj;
+    @try {
+        if ([view respondsToSelector:@selector(text)]) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            id obj = [view performSelector:@selector(text)];
+            #pragma clang diagnostic pop
+            if ([obj isKindOfClass:[NSString class]] && [(NSString *)obj length] > 0) {
+                return (NSString *)obj;
+            }
         }
-    }
-    if ([view respondsToSelector:@selector(attributedText)]) {
-        #pragma clang diagnostic push
-        #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-        id obj = [view performSelector:@selector(attributedText)];
-        #pragma clang diagnostic pop
-        if ([obj isKindOfClass:[NSAttributedString class]]) {
-            return [(NSAttributedString *)obj string];
+        if ([view respondsToSelector:@selector(attributedText)]) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+            id obj = [view performSelector:@selector(attributedText)];
+            #pragma clang diagnostic pop
+            if ([obj isKindOfClass:[NSAttributedString class]]) {
+                return [(NSAttributedString *)obj string];
+            }
         }
-    }
-    if (view.accessibilityLabel.length > 0) return view.accessibilityLabel;
+        if (view.accessibilityLabel.length > 0) return view.accessibilityLabel;
+    } @catch (__unused NSException *e) {}
     return nil;
 }
 
+// Duyệt an toàn chống Mutation during enumeration
 - (UIView *)findSwipeOrderContainer:(UIView *)view depth:(NSInteger)depth {
     if (!view || view.isHidden || view.alpha < 0.01 || depth > 25) return nil;
-    if ([view isDescendantOfView:[SpeedDebugLogger shared].container]) return nil;
+    if ([SpeedDebugLogger shared].container && [view isDescendantOfView:[SpeedDebugLogger shared].container]) return nil;
 
     NSString *content = [self extractTextSafely:view];
     if (content.length > 0 && [content containsString:@"Vuốt để nhận đơn"]) {
         return view;
     }
 
-    for (UIView *sub in view.subviews) {
+    // Luôn copy mảng subviews để tránh bị crash khi React Native đang thêm view con
+    NSArray<UIView *> *safeSubviews = [view.subviews copy];
+    for (UIView *sub in safeSubviews) {
         UIView *found = [self findSwipeOrderContainer:sub depth:depth + 1];
         if (found) return found;
     }
@@ -578,7 +594,7 @@ static double get_real_monotonic_seconds(void) {
     [[SpeedDebugLogger shared] updateStatus:@"🔥 SPEED x5.0 (RUNNING)" isWarning:NO];
     [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@">>> [TRIGGER] %@", reason]];
 
-    // Tắt về 1.0x sau đúng 2.0 giây
+    // Tự động ngắt về 1.0x sau 2.0 giây
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         set_dynamic_speed(1.0f);
         self.isBurstActive = NO;
@@ -586,7 +602,7 @@ static double get_real_monotonic_seconds(void) {
         [[SpeedDebugLogger shared] appendLog:@">>> [RESET] Về lại tốc độ 1.0x gốc."];
     });
 
-    // Sau 6 giây giải phóng cooldown
+    // Giải phóng cooldown sau 6 giây
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         self.isCooldown = NO;
         [[SpeedDebugLogger shared] updateStatus:@"⚡ Cơ chế 2: Geometry & Time" isWarning:NO];
@@ -606,7 +622,7 @@ static double get_real_monotonic_seconds(void) {
         UIWindow *win = [SpeedDebugLogger findAppKeyWindow];
         if (!win) return;
 
-        // 1. Khi đang bám sát đơn hàng đã phát hiện
+        // 1. Khi đang theo dõi đơn hàng
         if (self.trackedOrderView) {
             if (self.trackedOrderView.isHidden || !self.trackedOrderView.superview) {
                 [[SpeedDebugLogger shared] appendLog:@"[ORDER CLOSED] Màn hình đơn đã đóng hoặc nhận xong."];
@@ -622,13 +638,13 @@ static double get_real_monotonic_seconds(void) {
             double elapsed = get_real_monotonic_seconds() - self.orderDetectedTimestamp;
             CGFloat currentWidth = self.trackedOrderView.superview ? self.trackedOrderView.superview.frame.size.width : self.trackedOrderView.frame.size.width;
 
-            // In log tiến trình đếm
+            // Log nhịp đếm
             if (elapsed < 5.0) {
                 [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@"[ĐANG ĐẾM] %.2fs trôi qua (còn ~%.1fs)",
                                                       elapsed, (7.0 - elapsed > 0 ? 7.0 - elapsed : 0.0)]];
             }
 
-            // A. Kiểm tra tỷ lệ co giãn hình học (Geometry Shrink: còn 42.8% tương ứng 3/7)
+            // A. Khớp tỷ lệ co giãn hình học (còn 42.8% ~ 3/7)
             if (self.initialBarWidth > 50.0 && currentWidth < self.initialBarWidth) {
                 CGFloat ratio = currentWidth / self.initialBarWidth;
                 if (ratio <= (3.0f / 7.0f) && ratio >= 0.20f) {
@@ -637,7 +653,7 @@ static double get_real_monotonic_seconds(void) {
                 }
             }
 
-            // B. Đo mốc thời gian chuẩn xác (7s - 3s = đúng 4.0 giây sau khi xuất hiện)
+            // B. Mốc thời gian chuẩn xác (7s - 3s = sau 4.0s)
             if (elapsed >= 4.0) {
                 [self triggerSpeedBurstWithReason:@"Đúng mốc 4.0s (chạm giây thứ 3)!"];
                 return;
@@ -657,21 +673,25 @@ static double get_real_monotonic_seconds(void) {
             self.initialBarWidth = container.frame.size.width;
 
             [[SpeedDebugLogger shared] appendLog:@"------------------------------------"];
-            [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@"🎯 [ĐƠN NỔ RA] Đã bắt mốc xuất hiện nút vuốt (W:%.0f)!", self.initialBarWidth]];
-            [[SpeedDebugLogger shared] appendLog:@"⏳ Đang tính toán điểm rơi giây thứ 3 (sau 4.0s)..."];
+            [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@"🎯 [ĐƠN NỔ RA] Bắt mốc nút vuốt (W:%.0f)!", self.initialBarWidth]];
+            [[SpeedDebugLogger shared] appendLog:@"⏳ Đang tính điểm rơi giây thứ 3 (sau 4.0s)..."];
             [[SpeedDebugLogger shared] appendLog:@"------------------------------------"];
         }
     });
 }
 
 - (void)startWatcher {
+    if (self.isWatcherRunning) return; // Chống tạo lặp timer gây crash
+    self.isWatcherRunning = YES;
+
     dispatch_queue_t queue = dispatch_queue_create("com.speedhack.geometrytime", DISPATCH_QUEUE_SERIAL);
     self.monitorTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
 
+    // Trì hoãn quét lần đầu 2.0s để React Native nạp xong UI ban đầu
     dispatch_source_set_timer(self.monitorTimer,
-                              dispatch_time(DISPATCH_TIME_NOW, 0),
-                              (uint64_t)(0.10 * NSEC_PER_SEC),
-                              (uint64_t)(0.01 * NSEC_PER_SEC));
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                              (uint64_t)(0.12 * NSEC_PER_SEC),
+                              (uint64_t)(0.02 * NSEC_PER_SEC));
 
     __weak typeof(self) weakSelf = self;
     dispatch_source_set_event_handler(self.monitorTimer, ^{
@@ -688,6 +708,12 @@ static double get_real_monotonic_seconds(void) {
 // ==========================================
 __attribute__((constructor))
 static void initialize_smart_speedhack(void) {
+    // 1. Nạp con trỏ hàm gốc qua dlsym trước tiên để chống crash NULL pointer
+    orig_gettimeofday = (int (*)(struct timeval *, struct timezone *))dlsym(RTLD_DEFAULT, "gettimeofday");
+    orig_CFAbsoluteTimeGetCurrent = (CFAbsoluteTime (*)(void))dlsym(RTLD_DEFAULT, "CFAbsoluteTimeGetCurrent");
+    orig_mach_absolute_time = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "mach_absolute_time");
+
+    // 2. Thực hiện Hook Fishhook
     struct rebinding rebindings[] = {
         {"gettimeofday", (void *)my_gettimeofday, (void **)&orig_gettimeofday},
         {"CFAbsoluteTimeGetCurrent", (void *)my_CFAbsoluteTimeGetCurrent, (void **)&orig_CFAbsoluteTimeGetCurrent},
@@ -696,15 +722,8 @@ static void initialize_smart_speedhack(void) {
     rebind_symbols(rebindings, 3);
     swizzle_NSDate_methods();
 
-    [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
-                                                      object:nil
-                                                       queue:[NSOperationQueue mainQueue]
-                                                  usingBlock:^(NSNotification * _Nonnull note) {
-        [[SpeedDebugLogger shared] setupUI];
-        [[GeometryTimeWatcher shared] startWatcher];
-    }];
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // 3. Khởi tạo sau 2.5s khi toàn bộ View và React Native Scene đã dựng hoàn chỉnh
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[SpeedDebugLogger shared] setupUI];
         [[GeometryTimeWatcher shared] startWatcher];
     });
