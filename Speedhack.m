@@ -173,7 +173,7 @@ static int rebind_symbols(struct rebinding rebindings[], size_t rebindings_nel) 
 }
 
 // ==========================================
-// 2. SPEED ENGINE (DYNAMIC SPEED FACTOR)
+// 2. SPEED ENGINE
 // ==========================================
 static float speed_factor = 1.0f;
 static os_unfair_lock speed_lock = OS_UNFAIR_LOCK_INIT;
@@ -288,7 +288,149 @@ static void swizzle_NSDate_methods(void) {
 }
 
 // ==========================================
-// 3. TARGET-LOCKING COUNTDOWN ENGINE
+// 3. FLOATING DEBUG LOGGER OVERLAY
+// ==========================================
+@interface DebugOverlayWindow : UIWindow
+@end
+
+@implementation DebugOverlayWindow
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    if (hit == self || hit == self.rootViewController.view) {
+        return nil; // Cho phép bấm xuyên qua màn hình app chính
+    }
+    return hit;
+}
+@end
+
+@interface SpeedDebugLogger : NSObject
+@property (nonatomic, strong) DebugOverlayWindow *window;
+@property (nonatomic, strong) UITextView *logTextView;
+@property (nonatomic, strong) NSMutableArray<NSString *> *logLines;
+@property (nonatomic, strong) UILabel *statusBadge;
+
++ (instancetype)shared;
+- (void)setupUI;
+- (void)appendLog:(NSString *)log;
+- (void)updateStatus:(NSString *)status isWarning:(BOOL)warn;
+@end
+
+@implementation SpeedDebugLogger
+
++ (instancetype)shared {
+    static SpeedDebugLogger *inst = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        inst = [[SpeedDebugLogger alloc] init];
+        inst.logLines = [NSMutableArray array];
+    });
+    return inst;
+}
+
+- (void)setupUI {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        CGRect screen = [UIScreen mainScreen].bounds;
+        self.window = [[DebugOverlayWindow alloc] initWithFrame:screen];
+        self.window.windowLevel = UIWindowLevelAlert + 1000.0;
+        self.window.backgroundColor = [UIColor clearColor];
+        self.window.hidden = NO;
+
+        UIViewController *vc = [[UIViewController alloc] init];
+        vc.view.backgroundColor = [UIColor clearColor];
+        self.window.rootViewController = vc;
+
+        // Bảng chứa log nổi góc trên bên phải
+        CGFloat pWidth = screen.size.width - 24;
+        CGFloat pHeight = 220;
+        UIView *container = [[UIView alloc] initWithFrame:CGRectMake(12, 45, pWidth, pHeight)];
+        container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+        container.layer.cornerRadius = 10;
+        container.layer.borderWidth = 1.0;
+        container.layer.borderColor = [UIColor colorWithRed:0.2 green:0.8 blue:1.0 alpha:0.8].CGColor;
+        container.clipsToBounds = YES;
+
+        // Thanh tiêu đề trạng thái
+        self.statusBadge = [[UILabel alloc] initWithFrame:CGRectMake(10, 6, pWidth - 140, 24)];
+        self.statusBadge.text = @"⚡ Speed: 1.0x | IDLE";
+        self.statusBadge.textColor = [UIColor greenColor];
+        self.statusBadge.font = [UIFont boldSystemFontOfSize:12];
+        [container addSubview:self.statusBadge];
+
+        // Nút Copy Log
+        UIButton *copyBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+        copyBtn.frame = CGRectMake(pWidth - 125, 5, 60, 26);
+        copyBtn.backgroundColor = [UIColor colorWithRed:0.2 green:0.4 blue:0.9 alpha:0.9];
+        copyBtn.layer.cornerRadius = 5;
+        [copyBtn setTitle:@"📋 Copy" forState:UIControlStateNormal];
+        copyBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11];
+        [copyBtn addTarget:self action:@selector(copyLogToClipboard) forControlEvents:UIControlEventTouchUpInside];
+        [container addSubview:copyBtn];
+
+        // Nút Clear Log
+        UIButton *clearBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+        clearBtn.frame = CGRectMake(pWidth - 60, 5, 50, 26);
+        clearBtn.backgroundColor = [UIColor colorWithRed:0.8 green:0.2 blue:0.2 alpha:0.9];
+        clearBtn.layer.cornerRadius = 5;
+        [clearBtn setTitle:@"🧹 Clear" forState:UIControlStateNormal];
+        clearBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11];
+        [clearBtn addTarget:self action:@selector(clearLogs) forControlEvents:UIControlEventTouchUpInside];
+        [container addSubview:clearBtn];
+
+        // Vùng hiển thị Text
+        self.logTextView = [[UITextView alloc] initWithFrame:CGRectMake(5, 35, pWidth - 10, pHeight - 40)];
+        self.logTextView.backgroundColor = [UIColor clearColor];
+        self.logTextView.textColor = [UIColor whiteColor];
+        self.logTextView.font = [UIFont fontWithName:@"Menlo" size:10] ?: [UIFont systemFontOfSize:10];
+        self.logTextView.editable = NO;
+        self.logTextView.selectable = NO;
+        [container addSubview:self.logTextView];
+
+        [vc.view addSubview:container];
+    });
+}
+
+- (void)copyLogToClipboard {
+    NSString *allText = [self.logLines componentsJoinedByString:@"\n"];
+    [UIPasteboard generalPasteboard].string = allText;
+
+    self.statusBadge.text = @"✅ Đã sao chép Log!";
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        self.statusBadge.text = @"⚡ Speed: 1.0x | IDLE";
+    });
+}
+
+- (void)clearLogs {
+    [self.logLines removeAllObjects];
+    self.logTextView.text = @"";
+}
+
+- (void)updateStatus:(NSString *)status isWarning:(BOOL)warn {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.statusBadge.text = status;
+        self.statusBadge.textColor = warn ? [UIColor redColor] : [UIColor greenColor];
+    });
+}
+
+- (void)appendLog:(NSString *)log {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.logLines.count > 40) {
+            [self.logLines removeObjectAtIndex:0];
+        }
+        [self.logLines addObject:log];
+        self.logTextView.text = [self.logLines componentsJoinedByString:@"\n"];
+        
+        // Tự cuộn xuống dưới cùng
+        if (self.logTextView.text.length > 0) {
+            NSRange bottom = NSMakeRange(self.logTextView.text.length - 1, 1);
+            [self.logTextView scrollRangeToVisible:bottom];
+        }
+    });
+}
+
+@end
+
+// ==========================================
+// 4. SMART WATCHER + DETAILED DIAGNOSTICS
 // ==========================================
 @interface SmartCountdownWatcher : NSObject
 @property (nonatomic, strong) dispatch_source_t monitorTimer;
@@ -320,27 +462,30 @@ static void swizzle_NSDate_methods(void) {
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
             for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-                if (window.isKeyWindow) return window;
+                if (window.isKeyWindow && ![window isKindOfClass:[DebugOverlayWindow class]]) return window;
             }
         }
     }
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if (w.isKeyWindow) return w;
+        if (w.isKeyWindow && ![w isKindOfClass:[DebugOverlayWindow class]]) return w;
     }
     return [UIApplication sharedApplication].windows.firstObject;
 }
 
 - (NSInteger)parseSecondFromString:(NSString *)rawText {
-    if (!rawText || rawText.length == 0 || rawText.length > 5) return -1;
+    if (!rawText || rawText.length == 0 || rawText.length > 8) return -1;
     NSString *clean = [[rawText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
 
     clean = [clean stringByReplacingOccurrencesOfString:@"s" withString:@""];
+    clean = [clean stringByReplacingOccurrencesOfString:@"sec" withString:@""];
+    clean = [clean stringByReplacingOccurrencesOfString:@"giây" withString:@""];
+    clean = [clean stringByReplacingOccurrencesOfString:@":" withString:@""];
     clean = [clean stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
 
     NSScanner *scanner = [NSScanner scannerWithString:clean];
     NSInteger val = -1;
     if ([scanner scanInteger:&val] && [scanner isAtEnd]) {
-        if (val >= 1 && val <= 7) return val;
+        if (val >= 1 && val <= 10) return val;
     }
     return -1;
 }
@@ -352,25 +497,42 @@ static void swizzle_NSDate_methods(void) {
         #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
         NSString *txt = [view performSelector:@selector(text)];
         #pragma clang diagnostic pop
-        if (txt.length > 0) return txt;
+        if ([txt isKindOfClass:[NSString class]] && txt.length > 0) return txt;
+    }
+    if ([view respondsToSelector:@selector(title)]) {
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        NSString *title = [view performSelector:@selector(title)];
+        #pragma clang diagnostic pop
+        if ([title isKindOfClass:[NSString class]] && title.length > 0) return title;
     }
     if (view.accessibilityLabel.length > 0) return view.accessibilityLabel;
     if (view.accessibilityValue.length > 0) return view.accessibilityValue;
     return nil;
 }
 
-- (UIView *)findCountdownViewInHierarchy:(UIView *)view {
-    if (!view || view.isHidden || view.alpha < 0.01) return nil;
+// Quét đệ quy và log mọi đoạn text ngắn (dưới 20 ký tự) lên màn hình
+- (UIView *)inspectAndFindCountdownView:(UIView *)view depth:(NSInteger)depth {
+    if (!view || view.isHidden || view.alpha < 0.01 || depth > 20) return nil;
+    if ([view isDescendantOfView:[SpeedDebugLogger shared].window]) return nil;
 
     NSString *content = [self extractTextFromView:view];
-    NSInteger sec = [self parseSecondFromString:content];
-    if (sec >= 4 && sec <= 7) {
-        return view;
+    if (content.length > 0 && content.length <= 20) {
+        NSInteger sec = [self parseSecondFromString:content];
+        
+        // Ghi lại vào log chẩn đoán
+        NSString *className = NSStringFromClass([view class]);
+        NSString *logEntry = [NSString stringWithFormat:@"[%@] -> \"%@\" (sec: %ld)", className, content, (long)sec];
+        [[SpeedDebugLogger shared] appendLog:logEntry];
+
+        if (sec >= 3 && sec <= 8) {
+            return view;
+        }
     }
 
     for (UIView *sub in view.subviews) {
-        UIView *matched = [self findCountdownViewInHierarchy:sub];
-        if (matched) return matched;
+        UIView *found = [self inspectAndFindCountdownView:sub depth:depth + 1];
+        if (found) return found;
     }
     return nil;
 }
@@ -381,20 +543,24 @@ static void swizzle_NSDate_methods(void) {
     self.isBurstActive = YES;
     self.isCooldown = YES;
 
-    // Kích hoạt x5.0 khi chạm giây thứ 3
     set_dynamic_speed(5.0f);
+    [[SpeedDebugLogger shared] updateStatus:@"🔥 SPEED x5.0 (RUNNING)" isWarning:NO];
+    [[SpeedDebugLogger shared] appendLog:@">>> [TRIGGER] ĐÃ KÍCH HOẠT TỐC ĐỘ X5 TẠI GIÂY 3! <<<"];
 
-    // Tắt về 1.0x sau 2.0 giây
+    // Trả về 1.0x sau 2.0 giây
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         set_dynamic_speed(1.0f);
         self.isBurstActive = NO;
         self.lockedCountdownView = nil;
         self.lastSeenSecond = -1;
+        [[SpeedDebugLogger shared] updateStatus:@"⚡ Speed: 1.0x | COOLDOWN" isWarning:YES];
+        [[SpeedDebugLogger shared] appendLog:@">>> [RESET] Trở về tốc độ 1.0x gốc."];
     });
 
-    // Khóa tránh kích hoạt lặp
+    // Mở khóa cooldown sau 5 giây
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         self.isCooldown = NO;
+        [[SpeedDebugLogger shared] updateStatus:@"⚡ Speed: 1.0x | IDLE" isWarning:NO];
     });
 }
 
@@ -404,9 +570,10 @@ static void swizzle_NSDate_methods(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.isBurstActive || self.isCooldown) return;
 
-        // Đọc trực tiếp từ con trỏ đã khóa
+        // FAST-PATH: Nếu đã khóa được mục tiêu
         if (self.lockedCountdownView) {
             if (self.lockedCountdownView.isHidden || !self.lockedCountdownView.superview) {
+                [[SpeedDebugLogger shared] appendLog:@"[LOCK LOST] View đếm đã biến mất khỏi màn hình."];
                 self.lockedCountdownView = nil;
                 self.lastSeenSecond = -1;
                 return;
@@ -414,6 +581,8 @@ static void swizzle_NSDate_methods(void) {
 
             NSString *txt = [self extractTextFromView:self.lockedCountdownView];
             NSInteger currentSec = [self parseSecondFromString:txt];
+
+            [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@"[FAST-READ] View khóa nhảy số: %@", txt]];
 
             if (currentSec == 3) {
                 [self triggerSpeedBurst];
@@ -426,11 +595,11 @@ static void swizzle_NSDate_methods(void) {
             return;
         }
 
-        // Quét tìm view đếm ngược khi chưa khóa
+        // SLOW-PATH: Quét tìm view đếm ngược
         UIWindow *win = [SmartCountdownWatcher getKeyWindow];
         if (!win) return;
 
-        UIView *found = [self findCountdownViewInHierarchy:win];
+        UIView *found = [self inspectAndFindCountdownView:win depth:0];
         if (found) {
             NSString *txt = [self extractTextFromView:found];
             NSInteger sec = [self parseSecondFromString:txt];
@@ -441,6 +610,7 @@ static void swizzle_NSDate_methods(void) {
             } else if (sec > 3) {
                 self.lockedCountdownView = found;
                 self.lastSeenSecond = sec;
+                [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@">> [TARGET LOCKED] Đã khóa View (%@) tại số %ld <<", NSStringFromClass([found class]), (long)sec]];
             }
         }
     });
@@ -450,10 +620,11 @@ static void swizzle_NSDate_methods(void) {
     dispatch_queue_t queue = dispatch_queue_create("com.speedhack.smartwatcher", DISPATCH_QUEUE_SERIAL);
     self.monitorTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
 
+    // Quét chu kỳ 120ms
     dispatch_source_set_timer(self.monitorTimer,
                               dispatch_time(DISPATCH_TIME_NOW, 0),
-                              (uint64_t)(0.08 * NSEC_PER_SEC),
-                              (uint64_t)(0.01 * NSEC_PER_SEC));
+                              (uint64_t)(0.12 * NSEC_PER_SEC),
+                              (uint64_t)(0.02 * NSEC_PER_SEC));
 
     __weak typeof(self) weakSelf = self;
     dispatch_source_set_event_handler(self.monitorTimer, ^{
@@ -466,7 +637,7 @@ static void swizzle_NSDate_methods(void) {
 @end
 
 // ==========================================
-// 4. INITIALIZER
+// 5. INITIALIZER
 // ==========================================
 __attribute__((constructor))
 static void initialize_smart_speedhack(void) {
@@ -478,7 +649,8 @@ static void initialize_smart_speedhack(void) {
     rebind_symbols(rebindings, 3);
     swizzle_NSDate_methods();
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [[SpeedDebugLogger shared] setupUI];
         [[SmartCountdownWatcher shared] startWatcher];
     });
 }
