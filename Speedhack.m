@@ -22,7 +22,7 @@
 #endif
 
 // ==========================================
-// 1. EMBEDDED FISHHOOK IMPLEMENTATION
+// 1. EMBEDDED FISHHOOK
 // ==========================================
 #ifdef __LP64__
 typedef struct mach_header_64 mach_header_t;
@@ -276,11 +276,23 @@ uint64_t my_mach_absolute_time(void) {
 }
 
 // ==========================================
-// 3. PASS-THROUGH DEBUG LOGGER
+// 3. SAFE ATTACHED DEBUG OVERLAY
 // ==========================================
+@interface AttachedDebugContainer : UIView
+@end
+
+@implementation AttachedDebugContainer
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    if ([hit isKindOfClass:[UIButton class]]) {
+        return hit;
+    }
+    return nil; // Cho phép bấm xuyên thấu toàn bộ giao diện trừ nút bấm
+}
+@end
+
 @interface SpeedDebugLogger : NSObject
-@property (nonatomic, strong) UIWindow *window;
-@property (nonatomic, strong) UIView *container;
+@property (nonatomic, strong) AttachedDebugContainer *container;
 @property (nonatomic, strong) UITextView *logTextView;
 @property (nonatomic, strong) NSMutableArray<NSString *> *logLines;
 @property (nonatomic, strong) UILabel *statusBadge;
@@ -292,24 +304,6 @@ uint64_t my_mach_absolute_time(void) {
 - (void)setupUI;
 - (void)appendLog:(NSString *)log;
 - (void)updateStatus:(NSString *)status isWarning:(BOOL)warn;
-@end
-
-@interface PassThroughWindow : UIWindow
-@end
-
-@implementation PassThroughWindow
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    SpeedDebugLogger *logger = [SpeedDebugLogger shared];
-    if (logger.btnCopy && !logger.btnCopy.isHidden) {
-        CGPoint pt = [self convertPoint:point toView:logger.btnCopy];
-        if ([logger.btnCopy pointInside:pt withEvent:event]) return logger.btnCopy;
-    }
-    if (logger.btnClear && !logger.btnClear.isHidden) {
-        CGPoint pt = [self convertPoint:point toView:logger.btnClear];
-        if ([logger.btnClear pointInside:pt withEvent:event]) return logger.btnClear;
-    }
-    return nil;
-}
 @end
 
 @implementation SpeedDebugLogger
@@ -325,33 +319,20 @@ uint64_t my_mach_absolute_time(void) {
     return inst;
 }
 
-+ (UIWindowScene *)getActiveScene {
++ (UIWindow *)findKeyWindow {
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
-            return (UIWindowScene *)scene;
-        }
-    }
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if ([scene isKindOfClass:[UIWindowScene class]]) {
-            return (UIWindowScene *)scene;
-        }
-    }
-    return nil;
-}
-
-+ (UIWindow *)findAppKeyWindow {
-    UIWindowScene *scene = [self getActiveScene];
-    if (scene) {
-        for (UIWindow *w in scene.windows) {
-            if (w.isKeyWindow && ![w isKindOfClass:[PassThroughWindow class]]) return w;
-            if (!w.isHidden && ![w isKindOfClass:[PassThroughWindow class]]) return w;
+            for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+                if (w.isKeyWindow) return w;
+                if (!w.isHidden) return w;
+            }
         }
     }
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if (w.isKeyWindow && ![w isKindOfClass:[PassThroughWindow class]]) return w;
-        if (!w.isHidden && ![w isKindOfClass:[PassThroughWindow class]]) return w;
+        if (w.isKeyWindow) return w;
+        if (!w.isHidden) return w;
     }
-    return nil;
+    return [UIApplication sharedApplication].windows.firstObject;
 }
 
 - (void)setupUI {
@@ -360,14 +341,15 @@ uint64_t my_mach_absolute_time(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.isMounted) return;
 
-        UIWindowScene *scene = [SpeedDebugLogger getActiveScene];
-        CGRect screen = [UIScreen mainScreen].bounds;
+        UIWindow *targetWindow = [SpeedDebugLogger findKeyWindow];
+        if (!targetWindow) return;
 
+        CGRect screen = targetWindow.bounds;
         CGFloat pWidth = screen.size.width - 24;
-        CGFloat pHeight = 230;
+        CGFloat pHeight = 220;
 
-        self.container = [[UIView alloc] initWithFrame:CGRectMake(12, 50, pWidth, pHeight)];
-        self.container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.88];
+        self.container = [[AttachedDebugContainer alloc] initWithFrame:CGRectMake(12, 50, pWidth, pHeight)];
+        self.container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
         self.container.layer.cornerRadius = 10;
         self.container.layer.borderWidth = 1.5;
         self.container.layer.borderColor = [UIColor colorWithRed:0.0 green:0.8 blue:1.0 alpha:0.9].CGColor;
@@ -375,7 +357,7 @@ uint64_t my_mach_absolute_time(void) {
         self.container.userInteractionEnabled = YES;
 
         self.statusBadge = [[UILabel alloc] initWithFrame:CGRectMake(10, 6, pWidth - 140, 24)];
-        self.statusBadge.text = @"⚡ Cơ chế 1: Deep RN Text";
+        self.statusBadge.text = @"⚡ Full UI Scanner | Active";
         self.statusBadge.textColor = [UIColor colorWithRed:0.2 green:1.0 blue:0.4 alpha:1.0];
         self.statusBadge.font = [UIFont boldSystemFontOfSize:11];
         [self.container addSubview:self.statusBadge];
@@ -407,29 +389,9 @@ uint64_t my_mach_absolute_time(void) {
         self.logTextView.userInteractionEnabled = NO;
         [self.container addSubview:self.logTextView];
 
-        if (scene) {
-            self.window = [[PassThroughWindow alloc] initWithWindowScene:scene];
-            self.window.frame = screen;
-            self.window.windowLevel = UIWindowLevelAlert + 1000.0;
-            self.window.backgroundColor = [UIColor clearColor];
-            
-            UIViewController *vc = [[UIViewController alloc] init];
-            vc.view.backgroundColor = [UIColor clearColor];
-            [vc.view addSubview:self.container];
-            
-            self.window.rootViewController = vc;
-            self.window.hidden = NO;
-            self.isMounted = YES;
-        }
-
-        if (!self.isMounted) {
-            UIWindow *appWin = [SpeedDebugLogger findAppKeyWindow];
-            if (appWin && appWin.rootViewController.view) {
-                [appWin.rootViewController.view addSubview:self.container];
-                [appWin.rootViewController.view bringSubviewToFront:self.container];
-                self.isMounted = YES;
-            }
-        }
+        [targetWindow addSubview:self.container];
+        [targetWindow bringSubviewToFront:self.container];
+        self.isMounted = YES;
     });
 }
 
@@ -437,9 +399,9 @@ uint64_t my_mach_absolute_time(void) {
     NSString *allText = [self.logLines componentsJoinedByString:@"\n"];
     [UIPasteboard generalPasteboard].string = allText;
 
-    self.statusBadge.text = @"✅ Đã sao chép Log!";
+    self.statusBadge.text = @"✅ Đã sao chép!";
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        self.statusBadge.text = @"⚡ Cơ chế 1: Deep RN Text";
+        self.statusBadge.text = @"⚡ Full UI Scanner | Active";
     });
 }
 
@@ -457,7 +419,7 @@ uint64_t my_mach_absolute_time(void) {
 
 - (void)appendLog:(NSString *)log {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (self.logLines.count > 60) {
+        if (self.logLines.count > 50) {
             [self.logLines removeObjectAtIndex:0];
         }
         [self.logLines addObject:log];
@@ -473,7 +435,7 @@ uint64_t my_mach_absolute_time(void) {
 @end
 
 // ==========================================
-// 4. SMART WATCHER & ENGINE COUNTDOWN (CƠ CHẾ 1)
+// 4. FULL-SCREEN SMART COUNTDOWN WATCHER
 // ==========================================
 @interface SmartCountdownWatcher : NSObject
 @property (nonatomic, strong) dispatch_source_t monitorTimer;
@@ -481,6 +443,7 @@ uint64_t my_mach_absolute_time(void) {
 @property (nonatomic, assign) NSInteger lastSeenSecond;
 @property (nonatomic, assign) BOOL isBurstActive;
 @property (nonatomic, assign) BOOL isCooldown;
+@property (nonatomic, assign) BOOL isWatcherRunning;
 
 + (instancetype)shared;
 - (void)startWatcher;
@@ -497,6 +460,7 @@ uint64_t my_mach_absolute_time(void) {
         inst.lastSeenSecond = -1;
         inst.isBurstActive = NO;
         inst.isCooldown = NO;
+        inst.isWatcherRunning = NO;
     });
     return inst;
 }
@@ -519,10 +483,12 @@ uint64_t my_mach_absolute_time(void) {
     return -1;
 }
 
-- (NSString *)deepExtractTextFromView:(UIView *)view {
+// Bóc tách đa tầng kể cả Private Ivar của Fabric / React Native
+- (NSString *)ultraExtractTextFromView:(UIView *)view {
     if (!view) return nil;
 
     @try {
+        // 1. Selector text tiêu chuẩn
         if ([view respondsToSelector:@selector(text)]) {
             #pragma clang diagnostic push
             #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
@@ -533,6 +499,7 @@ uint64_t my_mach_absolute_time(void) {
             }
         }
 
+        // 2. React Native AttributedText
         if ([view respondsToSelector:@selector(attributedText)]) {
             #pragma clang diagnostic push
             #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
@@ -544,20 +511,24 @@ uint64_t my_mach_absolute_time(void) {
             }
         }
 
-        Class catLayerClass = NSClassFromString(@"CATextLayer");
-        if (catLayerClass && view.layer.sublayers) {
-            for (CALayer *sublayer in view.layer.sublayers) {
-                if ([sublayer isKindOfClass:catLayerClass]) {
-                    id stringObj = [sublayer valueForKey:@"string"];
-                    if ([stringObj isKindOfClass:[NSString class]]) {
-                        return (NSString *)stringObj;
-                    } else if ([stringObj isKindOfClass:[NSAttributedString class]]) {
-                        return [(NSAttributedString *)stringObj string];
-                    }
-                }
+        // 3. Ivar nội bộ: _attributedText hoặc _text
+        Ivar ivarAttr = class_getInstanceVariable([view class], "_attributedText");
+        if (ivarAttr) {
+            id val = object_getIvar(view, ivarAttr);
+            if ([val isKindOfClass:[NSAttributedString class]]) {
+                return [(NSAttributedString *)val string];
             }
         }
 
+        Ivar ivarText = class_getInstanceVariable([view class], "_text");
+        if (ivarText) {
+            id val = object_getIvar(view, ivarText);
+            if ([val isKindOfClass:[NSString class]]) {
+                return (NSString *)val;
+            }
+        }
+
+        // 4. Accessibility
         if (view.accessibilityLabel.length > 0) return view.accessibilityLabel;
         if (view.accessibilityValue.length > 0) return view.accessibilityValue;
     } @catch (__unused NSException *e) {}
@@ -565,65 +536,29 @@ uint64_t my_mach_absolute_time(void) {
     return nil;
 }
 
-- (void)dumpDetailedHierarchyUnderOrderView:(UIView *)orderView {
-    static BOOL didDump = NO;
-    if (didDump) return;
-    didDump = YES;
-
-    [[SpeedDebugLogger shared] appendLog:@"--- [CHI TIẾT VIEW VUỐT ĐƠN] ---"];
-    [self recurseDump:orderView indent:@" "];
-    [[SpeedDebugLogger shared] appendLog:@"--------------------------------"];
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        didDump = NO;
-    });
-}
-
-- (void)recurseDump:(UIView *)v indent:(NSString *)indent {
-    if (!v) return;
-    NSString *txt = [self deepExtractTextFromView:v];
-    NSString *cls = NSStringFromClass([v class]);
-    CGRect f = v.frame;
-
-    if (txt.length > 0 || v.subviews.count > 0) {
-        NSString *line = [NSString stringWithFormat:@"%@[%@] W:%.0f H:%.0f -> \"%@\"",
-                          indent, cls, f.size.width, f.size.height, txt ?: @""];
-        [[SpeedDebugLogger shared] appendLog:line];
-    }
-
-    NSArray<UIView *> *safeSubviews = [v.subviews copy];
-    for (UIView *sub in safeSubviews) {
-        [self recurseDump:sub indent:[indent stringByAppendingString:@"  "]];
-    }
-}
-
-- (UIView *)inspectAndFindCountdownView:(UIView *)view depth:(NSInteger)depth {
+- (UIView *)searchAllViewsForCountdown:(UIView *)view depth:(NSInteger)depth {
     if (!view || view.isHidden || view.alpha < 0.01 || depth > 25) return nil;
-    if ([view isDescendantOfView:[SpeedDebugLogger shared].container]) return nil;
+    if ([SpeedDebugLogger shared].container && [view isDescendantOfView:[SpeedDebugLogger shared].container]) return nil;
 
-    NSString *content = [self deepExtractTextFromView:view];
+    NSString *content = [self ultraExtractTextFromView:view];
     if (content.length > 0) {
-        if ([content containsString:@"Vuốt để nhận đơn"]) {
-            [self dumpDetailedHierarchyUnderOrderView:view];
-        }
+        NSInteger sec = [self parseSecondFromString:content];
+        
+        // Log ra mọi view có chứa số từ 1 đến 15 để debug
+        if (sec >= 1 && sec <= 15) {
+            NSString *logMsg = [NSString stringWithFormat:@"🔍 [%@] W:%.0f H:%.0f -> \"%@\" (sec: %ld)",
+                                NSStringFromClass([view class]), view.frame.size.width, view.frame.size.height, content, (long)sec];
+            [[SpeedDebugLogger shared] appendLog:logMsg];
 
-        if (content.length <= 15) {
-            NSInteger sec = [self parseSecondFromString:content];
-            if (sec >= 1 && sec <= 10) {
-                NSString *logEntry = [NSString stringWithFormat:@"🎯 [%@] -> \"%@\" (sec: %ld)",
-                                      NSStringFromClass([view class]), content, (long)sec];
-                [[SpeedDebugLogger shared] appendLog:logEntry];
-
-                if (sec >= 3 && sec <= 8) {
-                    return view;
-                }
+            if (sec >= 3 && sec <= 8) {
+                return view;
             }
         }
     }
 
     NSArray<UIView *> *safeSubviews = [view.subviews copy];
     for (UIView *sub in safeSubviews) {
-        UIView *found = [self inspectAndFindCountdownView:sub depth:depth + 1];
+        UIView *found = [self searchAllViewsForCountdown:sub depth:depth + 1];
         if (found) return found;
     }
     return nil;
@@ -645,12 +580,12 @@ uint64_t my_mach_absolute_time(void) {
         self.lockedCountdownView = nil;
         self.lastSeenSecond = -1;
         [[SpeedDebugLogger shared] updateStatus:@"⚡ Speed: 1.0x | COOLDOWN" isWarning:YES];
-        [[SpeedDebugLogger shared] appendLog:@">>> [RESET] Về tốc độ 1.0x gốc."];
+        [[SpeedDebugLogger shared] appendLog:@">>> [RESET] Về lại tốc độ 1.0x gốc."];
     });
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         self.isCooldown = NO;
-        [[SpeedDebugLogger shared] updateStatus:@"⚡ Cơ chế 1: Deep RN Text" isWarning:NO];
+        [[SpeedDebugLogger shared] updateStatus:@"⚡ Full UI Scanner | Active" isWarning:NO];
     });
 }
 
@@ -664,53 +599,58 @@ uint64_t my_mach_absolute_time(void) {
             [[SpeedDebugLogger shared] setupUI];
         }
 
-        // Fast-path: Khi đã khóa View
-        if (self.lockedCountdownView) {
-            if (self.lockedCountdownView.isHidden || !self.lockedCountdownView.superview) {
-                self.lockedCountdownView = nil;
-                self.lastSeenSecond = -1;
+        @try {
+            // FAST-PATH: Nếu đã khóa trúng View đếm
+            if (self.lockedCountdownView) {
+                if (self.lockedCountdownView.isHidden || !self.lockedCountdownView.superview) {
+                    self.lockedCountdownView = nil;
+                    self.lastSeenSecond = -1;
+                    return;
+                }
+
+                NSString *txt = [self ultraExtractTextFromView:self.lockedCountdownView];
+                NSInteger currentSec = [self parseSecondFromString:txt];
+
+                [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@"[FAST-READ] View đếm: %@", txt]];
+
+                if (currentSec == 3) {
+                    [self triggerSpeedBurst];
+                } else if (currentSec > 0) {
+                    self.lastSeenSecond = currentSec;
+                } else {
+                    self.lockedCountdownView = nil;
+                    self.lastSeenSecond = -1;
+                }
                 return;
             }
 
-            NSString *txt = [self deepExtractTextFromView:self.lockedCountdownView];
-            NSInteger currentSec = [self parseSecondFromString:txt];
+            // SLOW-PATH: Quét tìm trên toàn bộ KeyWindow
+            UIWindow *win = [SpeedDebugLogger findKeyWindow];
+            if (!win) return;
 
-            [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@"[FAST-READ] View đếm: %@", txt]];
+            UIView *found = [self searchAllViewsForCountdown:win depth:0];
+            if (found) {
+                NSString *txt = [self ultraExtractTextFromView:found];
+                NSInteger sec = [self parseSecondFromString:txt];
 
-            if (currentSec == 3) {
-                [self triggerSpeedBurst];
-            } else if (currentSec > 0) {
-                self.lastSeenSecond = currentSec;
-            } else {
-                self.lockedCountdownView = nil;
-                self.lastSeenSecond = -1;
+                if (sec == 3) {
+                    self.lockedCountdownView = found;
+                    [self triggerSpeedBurst];
+                } else if (sec > 3) {
+                    self.lockedCountdownView = found;
+                    self.lastSeenSecond = sec;
+                    [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@">> [LOCKED] Khóa View (%@) tại số %ld <<",
+                                                          NSStringFromClass([found class]), (long)sec]];
+                }
             }
-            return;
-        }
-
-        // Slow-path: Quét tìm view đếm ngược
-        UIWindow *win = [SpeedDebugLogger findAppKeyWindow];
-        if (!win) return;
-
-        UIView *found = [self inspectAndFindCountdownView:win depth:0];
-        if (found) {
-            NSString *txt = [self deepExtractTextFromView:found];
-            NSInteger sec = [self parseSecondFromString:txt];
-
-            if (sec == 3) {
-                self.lockedCountdownView = found;
-                [self triggerSpeedBurst];
-            } else if (sec > 3) {
-                self.lockedCountdownView = found;
-                self.lastSeenSecond = sec;
-                [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@">> [LOCKED] Khóa View (%@) tại số %ld <<",
-                                                      NSStringFromClass([found class]), (long)sec]];
-            }
-        }
+        } @catch (__unused NSException *e) {}
     });
 }
 
 - (void)startWatcher {
+    if (self.isWatcherRunning) return;
+    self.isWatcherRunning = YES;
+
     dispatch_queue_t queue = dispatch_queue_create("com.speedhack.smartwatcher", DISPATCH_QUEUE_SERIAL);
     self.monitorTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
 
