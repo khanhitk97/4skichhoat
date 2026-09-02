@@ -22,7 +22,7 @@
 #endif
 
 // ==========================================
-// 1. EMBEDDED FISHHOOK
+// 1. EMBEDDED FISHHOOK IMPLEMENTATION
 // ==========================================
 #ifdef __LP64__
 typedef struct mach_header_64 mach_header_t;
@@ -287,6 +287,16 @@ static void swizzle_NSDate_methods(void) {
     }
 }
 
+// Hàm đo thời gian Monotonic độ chính xác cao bằng Mach Kernel (Không phụ thuộc QuartzCore)
+static double get_real_monotonic_seconds(void) {
+    static mach_timebase_info_data_t tb;
+    if (tb.denom == 0) {
+        mach_timebase_info(&tb);
+    }
+    uint64_t t = mach_absolute_time();
+    return (double)t * ((double)tb.numer / (double)tb.denom) / 1e9;
+}
+
 // ==========================================
 // 3. PASS-THROUGH DEBUG LOGGER
 // ==========================================
@@ -490,7 +500,7 @@ static void swizzle_NSDate_methods(void) {
 @interface GeometryTimeWatcher : NSObject
 @property (nonatomic, strong) dispatch_source_t monitorTimer;
 @property (nonatomic, weak) UIView *trackedOrderView;
-@property (nonatomic, assign) CFTimeInterval orderDetectedTimestamp;
+@property (nonatomic, assign) double orderDetectedTimestamp;
 @property (nonatomic, assign) CGFloat initialBarWidth;
 @property (nonatomic, assign) BOOL isBurstActive;
 @property (nonatomic, assign) BOOL isCooldown;
@@ -508,8 +518,8 @@ static void swizzle_NSDate_methods(void) {
     dispatch_once(&onceToken, ^{
         inst = [[GeometryTimeWatcher alloc] init];
         inst.trackedOrderView = nil;
-        inst.orderDetectedTimestamp = 0;
-        inst.initialBarWidth = 0;
+        inst.orderDetectedTimestamp = 0.0;
+        inst.initialBarWidth = 0.0;
         inst.isBurstActive = NO;
         inst.isCooldown = NO;
         inst.didTriggerForCurrentOrder = NO;
@@ -557,7 +567,6 @@ static void swizzle_NSDate_methods(void) {
     return nil;
 }
 
-// Kích hoạt tăng tốc x5.0 và trở về gốc sau 2.0s
 - (void)triggerSpeedBurstWithReason:(NSString *)reason {
     if (self.isBurstActive || self.isCooldown || self.didTriggerForCurrentOrder) return;
 
@@ -597,27 +606,26 @@ static void swizzle_NSDate_methods(void) {
         UIWindow *win = [SpeedDebugLogger findAppKeyWindow];
         if (!win) return;
 
-        // 1. Nếu đang bám sát đơn hàng đã phát hiện
+        // 1. Khi đang bám sát đơn hàng đã phát hiện
         if (self.trackedOrderView) {
-            // Kiểm tra view có còn trên màn hình không
             if (self.trackedOrderView.isHidden || !self.trackedOrderView.superview) {
                 [[SpeedDebugLogger shared] appendLog:@"[ORDER CLOSED] Màn hình đơn đã đóng hoặc nhận xong."];
                 self.trackedOrderView = nil;
-                self.orderDetectedTimestamp = 0;
-                self.initialBarWidth = 0;
+                self.orderDetectedTimestamp = 0.0;
+                self.initialBarWidth = 0.0;
                 self.didTriggerForCurrentOrder = NO;
                 return;
             }
 
             if (self.didTriggerForCurrentOrder) return;
 
-            CFTimeInterval elapsed = CACurrentMediaTime() - self.orderDetectedTimestamp;
+            double elapsed = get_real_monotonic_seconds() - self.orderDetectedTimestamp;
             CGFloat currentWidth = self.trackedOrderView.superview ? self.trackedOrderView.superview.frame.size.width : self.trackedOrderView.frame.size.width;
 
-            // Log tiến trình đếm
+            // In log tiến trình đếm
             if (elapsed < 5.0) {
                 [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@"[ĐANG ĐẾM] %.2fs trôi qua (còn ~%.1fs)",
-                                                      elapsed, 7.0 - elapsed]];
+                                                      elapsed, (7.0 - elapsed > 0 ? 7.0 - elapsed : 0.0)]];
             }
 
             // A. Kiểm tra tỷ lệ co giãn hình học (Geometry Shrink: còn 42.8% tương ứng 3/7)
@@ -642,7 +650,7 @@ static void swizzle_NSDate_methods(void) {
         UIView *found = [self findSwipeOrderContainer:win depth:0];
         if (found) {
             self.trackedOrderView = found;
-            self.orderDetectedTimestamp = CACurrentMediaTime();
+            self.orderDetectedTimestamp = get_real_monotonic_seconds();
             self.didTriggerForCurrentOrder = NO;
 
             UIView *container = found.superview ?: found;
@@ -660,7 +668,6 @@ static void swizzle_NSDate_methods(void) {
     dispatch_queue_t queue = dispatch_queue_create("com.speedhack.geometrytime", DISPATCH_QUEUE_SERIAL);
     self.monitorTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
 
-    // Quét mỗi 100ms
     dispatch_source_set_timer(self.monitorTimer,
                               dispatch_time(DISPATCH_TIME_NOW, 0),
                               (uint64_t)(0.10 * NSEC_PER_SEC),
