@@ -12,7 +12,6 @@
 #import <mach-o/loader.h>
 #import <mach-o/nlist.h>
 #import <os/lock.h>
-#import <QuartzCore/QuartzCore.h>
 
 #ifndef LC_SEGMENT_ARCH_DEPENDENT
 #ifdef __LP64__
@@ -532,7 +531,7 @@ static void swizzle_NSDate_methods(void) {
     return -1;
 }
 
-// Bóc tách đa tầng: text, attributedText, CATextLayer, Accessibility
+// Bóc tách đa tầng: text, attributedText, CATextLayer (Dynamic lookup), Accessibility
 - (NSString *)deepExtractTextFromView:(UIView *)view {
     if (!view) return nil;
 
@@ -559,16 +558,19 @@ static void swizzle_NSDate_methods(void) {
         }
     }
 
-    // 3. CATextLayer sublayers (vẽ trực tiếp lên layer)
-    if (view.layer.sublayers) {
+    // 3. Dynamic lookup cho CATextLayer (tránh lỗi undefined symbol khi build)
+    Class catLayerClass = NSClassFromString(@"CATextLayer");
+    if (catLayerClass && view.layer.sublayers) {
         for (CALayer *sublayer in view.layer.sublayers) {
-            if ([sublayer isKindOfClass:[CATextLayer class]]) {
-                id stringObj = ((CATextLayer *)sublayer).string;
-                if ([stringObj isKindOfClass:[NSString class]]) {
-                    return (NSString *)stringObj;
-                } else if ([stringObj isKindOfClass:[NSAttributedString class]]) {
-                    return [(NSAttributedString *)stringObj string];
-                }
+            if ([sublayer isKindOfClass:catLayerClass]) {
+                @try {
+                    id stringObj = [sublayer valueForKey:@"string"];
+                    if ([stringObj isKindOfClass:[NSString class]]) {
+                        return (NSString *)stringObj;
+                    } else if ([stringObj isKindOfClass:[NSAttributedString class]]) {
+                        return [(NSAttributedString *)stringObj string];
+                    }
+                } @catch (__unused NSException *e) {}
             }
         }
     }
@@ -580,7 +582,7 @@ static void swizzle_NSDate_methods(void) {
     return nil;
 }
 
-// Khi phát hiện khu vực "Vuốt để nhận đơn", soi chi tiết từng phần tử con
+// Đào sâu cấu trúc node con bên dưới vùng "Vuốt để nhận đơn"
 - (void)dumpDetailedHierarchyUnderOrderView:(UIView *)orderView {
     static BOOL didDump = NO;
     if (didDump) return;
@@ -589,8 +591,7 @@ static void swizzle_NSDate_methods(void) {
     [[SpeedDebugLogger shared] appendLog:@"--- [CHI TIẾT VIEW VUỐT ĐƠN] ---"];
     [self recurseDump:orderView indent:@" "];
     [[SpeedDebugLogger shared] appendLog:@"--------------------------------"];
-    
-    // Reset dump sau 10 giây để sẵn sàng cho đơn sau
+
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         didDump = NO;
     });
@@ -619,7 +620,6 @@ static void swizzle_NSDate_methods(void) {
 
     NSString *content = [self deepExtractTextFromView:view];
     if (content.length > 0) {
-        // Nếu bắt được "Vuốt để nhận đơn", lập tức bóc tách chi tiết toàn bộ node con của nó
         if ([content containsString:@"Vuốt để nhận đơn"]) {
             [self dumpDetailedHierarchyUnderOrderView:view];
         }
@@ -680,7 +680,7 @@ static void swizzle_NSDate_methods(void) {
             [[SpeedDebugLogger shared] setupUI];
         }
 
-        // FAST-PATH: Nếu đã khóa mục tiêu
+        // FAST-PATH: Khi đã khóa view đếm
         if (self.lockedCountdownView) {
             if (self.lockedCountdownView.isHidden || !self.lockedCountdownView.superview) {
                 self.lockedCountdownView = nil;
@@ -704,7 +704,7 @@ static void swizzle_NSDate_methods(void) {
             return;
         }
 
-        // SLOW-PATH: Quét tìm view đếm ngược
+        // SLOW-PATH: Quét tìm view đếm
         UIWindow *win = [SpeedDebugLogger findAppKeyWindow];
         if (!win) return;
 
