@@ -288,7 +288,7 @@ static void swizzle_NSDate_methods(void) {
 }
 
 // ==========================================
-// 3. PASS-THROUGH OVERLAY LOGGER (FIX CẢM ỨNG)
+// 3. PASS-THROUGH OVERLAY LOGGER
 // ==========================================
 
 @interface SpeedDebugLogger : NSObject
@@ -297,8 +297,8 @@ static void swizzle_NSDate_methods(void) {
 @property (nonatomic, strong) UITextView *logTextView;
 @property (nonatomic, strong) NSMutableArray<NSString *> *logLines;
 @property (nonatomic, strong) UILabel *statusBadge;
-@property (nonatomic, strong) UIButton *copyBtn;
-@property (nonatomic, strong) UIButton *clearBtn;
+@property (nonatomic, strong) UIButton *btnCopy;
+@property (nonatomic, strong) UIButton *btnClear;
 @property (nonatomic, assign) BOOL isMounted;
 
 + (instancetype)shared;
@@ -307,7 +307,6 @@ static void swizzle_NSDate_methods(void) {
 - (void)updateStatus:(NSString *)status isWarning:(BOOL)warn;
 @end
 
-// Lớp Window đặc biệt: Chỉ bắt cảm ứng vào đúng nút bấm, còn lại cho xuyên thấu
 @interface PassThroughWindow : UIWindow
 @end
 
@@ -315,20 +314,20 @@ static void swizzle_NSDate_methods(void) {
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     SpeedDebugLogger *logger = [SpeedDebugLogger shared];
     
-    if (logger.copyBtn && !logger.copyBtn.isHidden) {
-        CGPoint pt = [self convertPoint:point toView:logger.copyBtn];
-        if ([logger.copyBtn pointInside:pt withEvent:event]) {
-            return logger.copyBtn;
+    if (logger.btnCopy && !logger.btnCopy.isHidden) {
+        CGPoint pt = [self convertPoint:point toView:logger.btnCopy];
+        if ([logger.btnCopy pointInside:pt withEvent:event]) {
+            return logger.btnCopy;
         }
     }
-    if (logger.clearBtn && !logger.clearBtn.isHidden) {
-        CGPoint pt = [self convertPoint:point toView:logger.clearBtn];
-        if ([logger.clearBtn pointInside:pt withEvent:event]) {
-            return logger.clearBtn;
+    if (logger.btnClear && !logger.btnClear.isHidden) {
+        CGPoint pt = [self convertPoint:point toView:logger.btnClear];
+        if ([logger.btnClear pointInside:pt withEvent:event]) {
+            return logger.btnClear;
         }
     }
     
-    // Mọi vị trí khác (bảng đen, text log, khoảng trống) đều cho xuyên thấu xuống app
+    // Mọi vị trí khác đều trả về nil để xuyên thấu xuống app
     return nil;
 }
 @end
@@ -401,23 +400,23 @@ static void swizzle_NSDate_methods(void) {
         self.statusBadge.font = [UIFont boldSystemFontOfSize:12];
         [self.container addSubview:self.statusBadge];
 
-        self.copyBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-        self.copyBtn.frame = CGRectMake(pWidth - 125, 5, 60, 26);
-        self.copyBtn.backgroundColor = [UIColor colorWithRed:0.2 green:0.4 blue:0.9 alpha:0.95];
-        self.copyBtn.layer.cornerRadius = 5;
-        [self.copyBtn setTitle:@"📋 Copy" forState:UIControlStateNormal];
-        self.copyBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11];
-        [self.copyBtn addTarget:self action:@selector(copyLogToClipboard) forControlEvents:UIControlEventTouchUpInside];
-        [self.container addSubview:self.copyBtn];
+        self.btnCopy = [UIButton buttonWithType:UIButtonTypeCustom];
+        self.btnCopy.frame = CGRectMake(pWidth - 125, 5, 60, 26);
+        self.btnCopy.backgroundColor = [UIColor colorWithRed:0.2 green:0.4 blue:0.9 alpha:0.95];
+        self.btnCopy.layer.cornerRadius = 5;
+        [self.btnCopy setTitle:@"📋 Copy" forState:UIControlStateNormal];
+        self.btnCopy.titleLabel.font = [UIFont boldSystemFontOfSize:11];
+        [self.btnCopy addTarget:self action:@selector(copyLogToClipboard) forControlEvents:UIControlEventTouchUpInside];
+        [self.container addSubview:self.btnCopy];
 
-        self.clearBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-        self.clearBtn.frame = CGRectMake(pWidth - 60, 5, 50, 26);
-        self.clearBtn.backgroundColor = [UIColor colorWithRed:0.85 green:0.2 blue:0.2 alpha:0.95];
-        self.clearBtn.layer.cornerRadius = 5;
-        [self.clearBtn setTitle:@"🧹 Clear" forState:UIControlStateNormal];
-        self.clearBtn.titleLabel.font = [UIFont boldSystemFontOfSize:11];
-        [self.clearBtn addTarget:self action:@selector(clearLogs) forControlEvents:UIControlEventTouchUpInside];
-        [self.container addSubview:self.clearBtn];
+        self.btnClear = [UIButton buttonWithType:UIButtonTypeCustom];
+        self.btnClear.frame = CGRectMake(pWidth - 60, 5, 50, 26);
+        self.btnClear.backgroundColor = [UIColor colorWithRed:0.85 green:0.2 blue:0.2 alpha:0.95];
+        self.btnClear.layer.cornerRadius = 5;
+        [self.btnClear setTitle:@"🧹 Clear" forState:UIControlStateNormal];
+        self.btnClear.titleLabel.font = [UIFont boldSystemFontOfSize:11];
+        [self.btnClear addTarget:self action:@selector(clearLogs) forControlEvents:UIControlEventTouchUpInside];
+        [self.container addSubview:self.btnClear];
 
         self.logTextView = [[UITextView alloc] initWithFrame:CGRectMake(5, 35, pWidth - 10, pHeight - 40)];
         self.logTextView.backgroundColor = [UIColor clearColor];
@@ -425,10 +424,9 @@ static void swizzle_NSDate_methods(void) {
         self.logTextView.font = [UIFont fontWithName:@"Menlo" size:10] ?: [UIFont systemFontOfSize:10];
         self.logTextView.editable = NO;
         self.logTextView.selectable = NO;
-        self.logTextView.userInteractionEnabled = NO; // Không chặn chạm
+        self.logTextView.userInteractionEnabled = NO;
         [self.container addSubview:self.logTextView];
 
-        // Tạo Window chuyên dụng cho phép xuyên thấu cảm ứng
         if (scene) {
             self.window = [[PassThroughWindow alloc] initWithWindowScene:scene];
             self.window.frame = screen;
@@ -445,7 +443,6 @@ static void swizzle_NSDate_methods(void) {
             self.isMounted = YES;
         }
 
-        // Dự phòng: Gắn trực tiếp nếu không lấy được scene
         if (!self.isMounted) {
             UIWindow *appWin = [SpeedDebugLogger findAppKeyWindow];
             if (appWin && appWin.rootViewController.view) {
@@ -456,7 +453,7 @@ static void swizzle_NSDate_methods(void) {
         }
 
         if (self.isMounted) {
-            [self appendLog:@"[SYSTEM] Khởi tạo thành công. Thao tác app bình thường!"];
+            [self appendLog:@"[SYSTEM] Khởi tạo thành công. Đã bật cảm ứng xuyên thấu."];
         }
     });
 }
@@ -602,7 +599,6 @@ static void swizzle_NSDate_methods(void) {
     [[SpeedDebugLogger shared] updateStatus:@"🔥 SPEED x5.0 (RUNNING)" isWarning:NO];
     [[SpeedDebugLogger shared] appendLog:@">>> [TRIGGER] ĐÃ BẬT X5 TẠI GIÂY 3! <<<"];
 
-    // Trả về 1.0x sau 2.0 giây
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         set_dynamic_speed(1.0f);
         self.isBurstActive = NO;
@@ -612,7 +608,6 @@ static void swizzle_NSDate_methods(void) {
         [[SpeedDebugLogger shared] appendLog:@">>> [RESET] Về tốc độ 1.0x gốc."];
     });
 
-    // Mở khóa cooldown sau 5 giây
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         self.isCooldown = NO;
         [[SpeedDebugLogger shared] updateStatus:@"⚡ Speed: 1.0x | IDLE" isWarning:NO];
