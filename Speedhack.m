@@ -275,19 +275,6 @@ uint64_t my_mach_absolute_time(void) {
     return result;
 }
 
-static void swizzle_NSDate_methods(void) {
-    Class nsdateClass = [NSDate class];
-    Method origRef = class_getClassMethod(nsdateClass, @selector(timeIntervalSinceReferenceDate));
-    if (origRef) method_setImplementation(origRef, (IMP)my_CFAbsoluteTimeGetCurrent);
-    
-    Method origDate = class_getClassMethod(nsdateClass, @selector(date));
-    if (origDate) {
-        method_setImplementation(origDate, imp_implementationWithBlock(^id(id self) {
-            return [NSDate dateWithTimeIntervalSinceReferenceDate:my_CFAbsoluteTimeGetCurrent()];
-        }));
-    }
-}
-
 static double get_real_monotonic_seconds(void) {
     static mach_timebase_info_data_t tb = {0, 0};
     if (tb.denom == 0) {
@@ -298,11 +285,23 @@ static double get_real_monotonic_seconds(void) {
 }
 
 // ==========================================
-// 3. PASS-THROUGH DEBUG LOGGER (AN TOÀN TUYỆT ĐỐI)
+// 3. ATTACHED DEBUG OVERLAY (KHÔNG TẠO UIWINDOW MỚI)
 // ==========================================
+@interface AttachedDebugContainer : UIView
+@end
+
+@implementation AttachedDebugContainer
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    if ([hit isKindOfClass:[UIButton class]]) {
+        return hit;
+    }
+    return nil; // Cho phép bấm xuyên thấu toàn bộ trừ nút bấm
+}
+@end
+
 @interface SpeedDebugLogger : NSObject
-@property (nonatomic, strong) UIWindow *window;
-@property (nonatomic, strong) UIView *container;
+@property (nonatomic, strong) AttachedDebugContainer *container;
 @property (nonatomic, strong) UITextView *logTextView;
 @property (nonatomic, strong) NSMutableArray<NSString *> *logLines;
 @property (nonatomic, strong) UILabel *statusBadge;
@@ -314,33 +313,6 @@ static double get_real_monotonic_seconds(void) {
 - (void)setupUI;
 - (void)appendLog:(NSString *)log;
 - (void)updateStatus:(NSString *)status isWarning:(BOOL)warn;
-@end
-
-@interface PassThroughWindow : UIWindow
-@end
-
-@implementation PassThroughWindow
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    SpeedDebugLogger *logger = [SpeedDebugLogger shared];
-    
-    // FIX CRASH: Chỉ convertPoint khi nút bấm đã thực sự nằm trong chính Window này
-    if (logger.btnCopy && !logger.btnCopy.isHidden && logger.btnCopy.window == self) {
-        @try {
-            CGPoint pt = [self convertPoint:point toView:logger.btnCopy];
-            if ([logger.btnCopy pointInside:pt withEvent:event]) return logger.btnCopy;
-        } @catch (__unused NSException *e) {}
-    }
-    
-    if (logger.btnClear && !logger.btnClear.isHidden && logger.btnClear.window == self) {
-        @try {
-            CGPoint pt = [self convertPoint:point toView:logger.btnClear];
-            if ([logger.btnClear pointInside:pt withEvent:event]) return logger.btnClear;
-        } @catch (__unused NSException *e) {}
-    }
-    
-    // Mọi vị trí khác trả về nil để lọt chạm xuống app chính
-    return nil;
-}
 @end
 
 @implementation SpeedDebugLogger
@@ -356,33 +328,20 @@ static double get_real_monotonic_seconds(void) {
     return inst;
 }
 
-+ (UIWindowScene *)getActiveScene {
++ (UIWindow *)findKeyWindow {
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
-            return (UIWindowScene *)scene;
-        }
-    }
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if ([scene isKindOfClass:[UIWindowScene class]]) {
-            return (UIWindowScene *)scene;
-        }
-    }
-    return nil;
-}
-
-+ (UIWindow *)findAppKeyWindow {
-    UIWindowScene *scene = [self getActiveScene];
-    if (scene) {
-        for (UIWindow *w in scene.windows) {
-            if (w.isKeyWindow && ![w isKindOfClass:[PassThroughWindow class]]) return w;
-            if (!w.isHidden && ![w isKindOfClass:[PassThroughWindow class]]) return w;
+            for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+                if (w.isKeyWindow) return w;
+                if (!w.isHidden) return w;
+            }
         }
     }
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if (w.isKeyWindow && ![w isKindOfClass:[PassThroughWindow class]]) return w;
-        if (!w.isHidden && ![w isKindOfClass:[PassThroughWindow class]]) return w;
+        if (w.isKeyWindow) return w;
+        if (!w.isHidden) return w;
     }
-    return nil;
+    return [UIApplication sharedApplication].windows.firstObject;
 }
 
 - (void)setupUI {
@@ -391,14 +350,15 @@ static double get_real_monotonic_seconds(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.isMounted) return;
 
-        UIWindowScene *scene = [SpeedDebugLogger getActiveScene];
-        CGRect screen = [UIScreen mainScreen].bounds;
+        UIWindow *targetWindow = [SpeedDebugLogger findKeyWindow];
+        if (!targetWindow) return;
 
+        CGRect screen = targetWindow.bounds;
         CGFloat pWidth = screen.size.width - 24;
-        CGFloat pHeight = 230;
+        CGFloat pHeight = 220;
 
-        self.container = [[UIView alloc] initWithFrame:CGRectMake(12, 50, pWidth, pHeight)];
-        self.container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.88];
+        self.container = [[AttachedDebugContainer alloc] initWithFrame:CGRectMake(12, 50, pWidth, pHeight)];
+        self.container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
         self.container.layer.cornerRadius = 10;
         self.container.layer.borderWidth = 1.5;
         self.container.layer.borderColor = [UIColor colorWithRed:0.0 green:0.8 blue:1.0 alpha:0.9].CGColor;
@@ -406,7 +366,7 @@ static double get_real_monotonic_seconds(void) {
         self.container.userInteractionEnabled = YES;
 
         self.statusBadge = [[UILabel alloc] initWithFrame:CGRectMake(10, 6, pWidth - 140, 24)];
-        self.statusBadge.text = @"⚡ Cơ chế 2: Geometry & Time";
+        self.statusBadge.text = @"⚡ Mechanism 2 | Active";
         self.statusBadge.textColor = [UIColor colorWithRed:0.2 green:1.0 blue:0.4 alpha:1.0];
         self.statusBadge.font = [UIFont boldSystemFontOfSize:11];
         [self.container addSubview:self.statusBadge];
@@ -438,29 +398,9 @@ static double get_real_monotonic_seconds(void) {
         self.logTextView.userInteractionEnabled = NO;
         [self.container addSubview:self.logTextView];
 
-        if (scene) {
-            self.window = [[PassThroughWindow alloc] initWithWindowScene:scene];
-            self.window.frame = screen;
-            self.window.windowLevel = UIWindowLevelAlert + 1000.0;
-            self.window.backgroundColor = [UIColor clearColor];
-            
-            UIViewController *vc = [[UIViewController alloc] init];
-            vc.view.backgroundColor = [UIColor clearColor];
-            [vc.view addSubview:self.container];
-            
-            self.window.rootViewController = vc;
-            self.window.hidden = NO;
-            self.isMounted = YES;
-        }
-
-        if (!self.isMounted) {
-            UIWindow *appWin = [SpeedDebugLogger findAppKeyWindow];
-            if (appWin && appWin.rootViewController.view) {
-                [appWin.rootViewController.view addSubview:self.container];
-                [appWin.rootViewController.view bringSubviewToFront:self.container];
-                self.isMounted = YES;
-            }
-        }
+        [targetWindow addSubview:self.container];
+        [targetWindow bringSubviewToFront:self.container];
+        self.isMounted = YES;
     });
 }
 
@@ -468,9 +408,9 @@ static double get_real_monotonic_seconds(void) {
     NSString *allText = [self.logLines componentsJoinedByString:@"\n"];
     [UIPasteboard generalPasteboard].string = allText;
 
-    self.statusBadge.text = @"✅ Đã sao chép Log!";
+    self.statusBadge.text = @"✅ Copied!";
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        self.statusBadge.text = @"⚡ Cơ chế 2: Geometry & Time";
+        self.statusBadge.text = @"⚡ Mechanism 2 | Active";
     });
 }
 
@@ -488,7 +428,7 @@ static double get_real_monotonic_seconds(void) {
 
 - (void)appendLog:(NSString *)log {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (self.logLines.count > 60) {
+        if (self.logLines.count > 50) {
             [self.logLines removeObjectAtIndex:0];
         }
         [self.logLines addObject:log];
@@ -564,7 +504,6 @@ static double get_real_monotonic_seconds(void) {
     return nil;
 }
 
-// Duyệt an toàn chống Mutation during enumeration
 - (UIView *)findSwipeOrderContainer:(UIView *)view depth:(NSInteger)depth {
     if (!view || view.isHidden || view.alpha < 0.01 || depth > 25) return nil;
     if ([SpeedDebugLogger shared].container && [view isDescendantOfView:[SpeedDebugLogger shared].container]) return nil;
@@ -574,7 +513,6 @@ static double get_real_monotonic_seconds(void) {
         return view;
     }
 
-    // Luôn copy mảng subviews để tránh bị crash khi React Native đang thêm view con
     NSArray<UIView *> *safeSubviews = [view.subviews copy];
     for (UIView *sub in safeSubviews) {
         UIView *found = [self findSwipeOrderContainer:sub depth:depth + 1];
@@ -594,18 +532,18 @@ static double get_real_monotonic_seconds(void) {
     [[SpeedDebugLogger shared] updateStatus:@"🔥 SPEED x5.0 (RUNNING)" isWarning:NO];
     [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@">>> [TRIGGER] %@", reason]];
 
-    // Tự động ngắt về 1.0x sau 2.0 giây
+    // Tắt về 1.0x sau 2.0s
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         set_dynamic_speed(1.0f);
         self.isBurstActive = NO;
         [[SpeedDebugLogger shared] updateStatus:@"⚡ Speed: 1.0x | COOLDOWN" isWarning:YES];
-        [[SpeedDebugLogger shared] appendLog:@">>> [RESET] Về lại tốc độ 1.0x gốc."];
+        [[SpeedDebugLogger shared] appendLog:@">>> [RESET] Returning to 1.0x"];
     });
 
-    // Giải phóng cooldown sau 6 giây
+    // Giải phóng cooldown sau 6s
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         self.isCooldown = NO;
-        [[SpeedDebugLogger shared] updateStatus:@"⚡ Cơ chế 2: Geometry & Time" isWarning:NO];
+        [[SpeedDebugLogger shared] updateStatus:@"⚡ Mechanism 2 | Active" isWarning:NO];
     });
 }
 
@@ -619,75 +557,75 @@ static double get_real_monotonic_seconds(void) {
             [[SpeedDebugLogger shared] setupUI];
         }
 
-        UIWindow *win = [SpeedDebugLogger findAppKeyWindow];
+        UIWindow *win = [SpeedDebugLogger findKeyWindow];
         if (!win) return;
 
-        // 1. Khi đang theo dõi đơn hàng
-        if (self.trackedOrderView) {
-            if (self.trackedOrderView.isHidden || !self.trackedOrderView.superview) {
-                [[SpeedDebugLogger shared] appendLog:@"[ORDER CLOSED] Màn hình đơn đã đóng hoặc nhận xong."];
-                self.trackedOrderView = nil;
-                self.orderDetectedTimestamp = 0.0;
-                self.initialBarWidth = 0.0;
-                self.didTriggerForCurrentOrder = NO;
-                return;
-            }
-
-            if (self.didTriggerForCurrentOrder) return;
-
-            double elapsed = get_real_monotonic_seconds() - self.orderDetectedTimestamp;
-            CGFloat currentWidth = self.trackedOrderView.superview ? self.trackedOrderView.superview.frame.size.width : self.trackedOrderView.frame.size.width;
-
-            // Log nhịp đếm
-            if (elapsed < 5.0) {
-                [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@"[ĐANG ĐẾM] %.2fs trôi qua (còn ~%.1fs)",
-                                                      elapsed, (7.0 - elapsed > 0 ? 7.0 - elapsed : 0.0)]];
-            }
-
-            // A. Khớp tỷ lệ co giãn hình học (còn 42.8% ~ 3/7)
-            if (self.initialBarWidth > 50.0 && currentWidth < self.initialBarWidth) {
-                CGFloat ratio = currentWidth / self.initialBarWidth;
-                if (ratio <= (3.0f / 7.0f) && ratio >= 0.20f) {
-                    [self triggerSpeedBurstWithReason:[NSString stringWithFormat:@"Khớp tỷ lệ hình học co lại còn %.1f%%!", ratio * 100]];
+        @try {
+            // 1. Khi đang theo dõi đơn hàng
+            if (self.trackedOrderView) {
+                if (self.trackedOrderView.isHidden || !self.trackedOrderView.superview) {
+                    [[SpeedDebugLogger shared] appendLog:@"[CLOSED] Order dismissed."];
+                    self.trackedOrderView = nil;
+                    self.orderDetectedTimestamp = 0.0;
+                    self.initialBarWidth = 0.0;
+                    self.didTriggerForCurrentOrder = NO;
                     return;
                 }
-            }
 
-            // B. Mốc thời gian chuẩn xác (7s - 3s = sau 4.0s)
-            if (elapsed >= 4.0) {
-                [self triggerSpeedBurstWithReason:@"Đúng mốc 4.0s (chạm giây thứ 3)!"];
+                if (self.didTriggerForCurrentOrder) return;
+
+                double elapsed = get_real_monotonic_seconds() - self.orderDetectedTimestamp;
+                CGFloat currentWidth = self.trackedOrderView.superview ? self.trackedOrderView.superview.frame.size.width : self.trackedOrderView.frame.size.width;
+
+                if (elapsed < 5.0) {
+                    [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@"[TICK] %.2fs elapsed (remain ~%.1fs)",
+                                                          elapsed, (7.0 - elapsed > 0 ? 7.0 - elapsed : 0.0)]];
+                }
+
+                // A. Khớp tỷ lệ co giãn hình học (~3/7 thời gian)
+                if (self.initialBarWidth > 50.0 && currentWidth < self.initialBarWidth) {
+                    CGFloat ratio = currentWidth / self.initialBarWidth;
+                    if (ratio <= (3.0f / 7.0f) && ratio >= 0.20f) {
+                        [self triggerSpeedBurstWithReason:[NSString stringWithFormat:@"Geometry shrink reached %.1f%%", ratio * 100]];
+                        return;
+                    }
+                }
+
+                // B. Chốt mốc thời gian thực 4.0s (7s - 3s)
+                if (elapsed >= 4.0) {
+                    [self triggerSpeedBurstWithReason:@"Exact 4.0s offset reached (3s remaining)!"];
+                    return;
+                }
+
                 return;
             }
 
-            return;
-        }
+            // 2. Quét tìm đơn mới
+            UIView *found = [self findSwipeOrderContainer:win depth:0];
+            if (found) {
+                self.trackedOrderView = found;
+                self.orderDetectedTimestamp = get_real_monotonic_seconds();
+                self.didTriggerForCurrentOrder = NO;
 
-        // 2. Quét tìm kiếm khi chưa có đơn
-        UIView *found = [self findSwipeOrderContainer:win depth:0];
-        if (found) {
-            self.trackedOrderView = found;
-            self.orderDetectedTimestamp = get_real_monotonic_seconds();
-            self.didTriggerForCurrentOrder = NO;
+                UIView *container = found.superview ?: found;
+                self.initialBarWidth = container.frame.size.width;
 
-            UIView *container = found.superview ?: found;
-            self.initialBarWidth = container.frame.size.width;
-
-            [[SpeedDebugLogger shared] appendLog:@"------------------------------------"];
-            [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@"🎯 [ĐƠN NỔ RA] Bắt mốc nút vuốt (W:%.0f)!", self.initialBarWidth]];
-            [[SpeedDebugLogger shared] appendLog:@"⏳ Đang tính điểm rơi giây thứ 3 (sau 4.0s)..."];
-            [[SpeedDebugLogger shared] appendLog:@"------------------------------------"];
-        }
+                [[SpeedDebugLogger shared] appendLog:@"------------------------------------"];
+                [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@"🎯 [ORDER DETECTED] Width: %.0f", self.initialBarWidth]];
+                [[SpeedDebugLogger shared] appendLog:@"⏳ Counting down to 3s mark (4.0s offset)..."];
+                [[SpeedDebugLogger shared] appendLog:@"------------------------------------"];
+            }
+        } @catch (__unused NSException *e) {}
     });
 }
 
 - (void)startWatcher {
-    if (self.isWatcherRunning) return; // Chống tạo lặp timer gây crash
+    if (self.isWatcherRunning) return;
     self.isWatcherRunning = YES;
 
     dispatch_queue_t queue = dispatch_queue_create("com.speedhack.geometrytime", DISPATCH_QUEUE_SERIAL);
     self.monitorTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
 
-    // Trì hoãn quét lần đầu 2.0s để React Native nạp xong UI ban đầu
     dispatch_source_set_timer(self.monitorTimer,
                               dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                               (uint64_t)(0.12 * NSEC_PER_SEC),
@@ -708,21 +646,17 @@ static double get_real_monotonic_seconds(void) {
 // ==========================================
 __attribute__((constructor))
 static void initialize_smart_speedhack(void) {
-    // 1. Nạp con trỏ hàm gốc qua dlsym trước tiên để chống crash NULL pointer
     orig_gettimeofday = (int (*)(struct timeval *, struct timezone *))dlsym(RTLD_DEFAULT, "gettimeofday");
     orig_CFAbsoluteTimeGetCurrent = (CFAbsoluteTime (*)(void))dlsym(RTLD_DEFAULT, "CFAbsoluteTimeGetCurrent");
     orig_mach_absolute_time = (uint64_t (*)(void))dlsym(RTLD_DEFAULT, "mach_absolute_time");
 
-    // 2. Thực hiện Hook Fishhook
     struct rebinding rebindings[] = {
         {"gettimeofday", (void *)my_gettimeofday, (void **)&orig_gettimeofday},
         {"CFAbsoluteTimeGetCurrent", (void *)my_CFAbsoluteTimeGetCurrent, (void **)&orig_CFAbsoluteTimeGetCurrent},
         {"mach_absolute_time", (void *)my_mach_absolute_time, (void **)&orig_mach_absolute_time}
     };
     rebind_symbols(rebindings, 3);
-    swizzle_NSDate_methods();
 
-    // 3. Khởi tạo sau 2.5s khi toàn bộ View và React Native Scene đã dựng hoàn chỉnh
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[SpeedDebugLogger shared] setupUI];
         [[GeometryTimeWatcher shared] startWatcher];
