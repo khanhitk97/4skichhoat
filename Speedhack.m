@@ -22,7 +22,7 @@
 #endif
 
 // ==========================================
-// 1. EMBEDDED FISHHOOK
+// 1. EMBEDDED FISHHOOK IMPLEMENTATION
 // ==========================================
 #ifdef __LP64__
 typedef struct mach_header_64 mach_header_t;
@@ -275,33 +275,12 @@ uint64_t my_mach_absolute_time(void) {
     return result;
 }
 
-static double get_real_monotonic_seconds(void) {
-    static mach_timebase_info_data_t tb = {0, 0};
-    if (tb.denom == 0) {
-        mach_timebase_info(&tb);
-    }
-    uint64_t t = orig_mach_absolute_time ? orig_mach_absolute_time() : mach_absolute_time();
-    return (double)t * ((double)tb.numer / (double)tb.denom) / 1e9;
-}
-
 // ==========================================
-// 3. ATTACHED DEBUG OVERLAY (KHÔNG TẠO UIWINDOW MỚI)
+// 3. PASS-THROUGH DEBUG LOGGER
 // ==========================================
-@interface AttachedDebugContainer : UIView
-@end
-
-@implementation AttachedDebugContainer
-- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    UIView *hit = [super hitTest:point withEvent:event];
-    if ([hit isKindOfClass:[UIButton class]]) {
-        return hit;
-    }
-    return nil; // Cho phép bấm xuyên thấu toàn bộ trừ nút bấm
-}
-@end
-
 @interface SpeedDebugLogger : NSObject
-@property (nonatomic, strong) AttachedDebugContainer *container;
+@property (nonatomic, strong) UIWindow *window;
+@property (nonatomic, strong) UIView *container;
 @property (nonatomic, strong) UITextView *logTextView;
 @property (nonatomic, strong) NSMutableArray<NSString *> *logLines;
 @property (nonatomic, strong) UILabel *statusBadge;
@@ -313,6 +292,24 @@ static double get_real_monotonic_seconds(void) {
 - (void)setupUI;
 - (void)appendLog:(NSString *)log;
 - (void)updateStatus:(NSString *)status isWarning:(BOOL)warn;
+@end
+
+@interface PassThroughWindow : UIWindow
+@end
+
+@implementation PassThroughWindow
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    SpeedDebugLogger *logger = [SpeedDebugLogger shared];
+    if (logger.btnCopy && !logger.btnCopy.isHidden) {
+        CGPoint pt = [self convertPoint:point toView:logger.btnCopy];
+        if ([logger.btnCopy pointInside:pt withEvent:event]) return logger.btnCopy;
+    }
+    if (logger.btnClear && !logger.btnClear.isHidden) {
+        CGPoint pt = [self convertPoint:point toView:logger.btnClear];
+        if ([logger.btnClear pointInside:pt withEvent:event]) return logger.btnClear;
+    }
+    return nil;
+}
 @end
 
 @implementation SpeedDebugLogger
@@ -328,20 +325,33 @@ static double get_real_monotonic_seconds(void) {
     return inst;
 }
 
-+ (UIWindow *)findKeyWindow {
++ (UIWindowScene *)getActiveScene {
     for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
         if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
-            for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-                if (w.isKeyWindow) return w;
-                if (!w.isHidden) return w;
-            }
+            return (UIWindowScene *)scene;
+        }
+    }
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]]) {
+            return (UIWindowScene *)scene;
+        }
+    }
+    return nil;
+}
+
++ (UIWindow *)findAppKeyWindow {
+    UIWindowScene *scene = [self getActiveScene];
+    if (scene) {
+        for (UIWindow *w in scene.windows) {
+            if (w.isKeyWindow && ![w isKindOfClass:[PassThroughWindow class]]) return w;
+            if (!w.isHidden && ![w isKindOfClass:[PassThroughWindow class]]) return w;
         }
     }
     for (UIWindow *w in [UIApplication sharedApplication].windows) {
-        if (w.isKeyWindow) return w;
-        if (!w.isHidden) return w;
+        if (w.isKeyWindow && ![w isKindOfClass:[PassThroughWindow class]]) return w;
+        if (!w.isHidden && ![w isKindOfClass:[PassThroughWindow class]]) return w;
     }
-    return [UIApplication sharedApplication].windows.firstObject;
+    return nil;
 }
 
 - (void)setupUI {
@@ -350,15 +360,14 @@ static double get_real_monotonic_seconds(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self.isMounted) return;
 
-        UIWindow *targetWindow = [SpeedDebugLogger findKeyWindow];
-        if (!targetWindow) return;
+        UIWindowScene *scene = [SpeedDebugLogger getActiveScene];
+        CGRect screen = [UIScreen mainScreen].bounds;
 
-        CGRect screen = targetWindow.bounds;
         CGFloat pWidth = screen.size.width - 24;
-        CGFloat pHeight = 220;
+        CGFloat pHeight = 230;
 
-        self.container = [[AttachedDebugContainer alloc] initWithFrame:CGRectMake(12, 50, pWidth, pHeight)];
-        self.container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+        self.container = [[UIView alloc] initWithFrame:CGRectMake(12, 50, pWidth, pHeight)];
+        self.container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.88];
         self.container.layer.cornerRadius = 10;
         self.container.layer.borderWidth = 1.5;
         self.container.layer.borderColor = [UIColor colorWithRed:0.0 green:0.8 blue:1.0 alpha:0.9].CGColor;
@@ -366,7 +375,7 @@ static double get_real_monotonic_seconds(void) {
         self.container.userInteractionEnabled = YES;
 
         self.statusBadge = [[UILabel alloc] initWithFrame:CGRectMake(10, 6, pWidth - 140, 24)];
-        self.statusBadge.text = @"⚡ Mechanism 2 | Active";
+        self.statusBadge.text = @"⚡ Cơ chế 1: Deep RN Text";
         self.statusBadge.textColor = [UIColor colorWithRed:0.2 green:1.0 blue:0.4 alpha:1.0];
         self.statusBadge.font = [UIFont boldSystemFontOfSize:11];
         [self.container addSubview:self.statusBadge];
@@ -398,9 +407,29 @@ static double get_real_monotonic_seconds(void) {
         self.logTextView.userInteractionEnabled = NO;
         [self.container addSubview:self.logTextView];
 
-        [targetWindow addSubview:self.container];
-        [targetWindow bringSubviewToFront:self.container];
-        self.isMounted = YES;
+        if (scene) {
+            self.window = [[PassThroughWindow alloc] initWithWindowScene:scene];
+            self.window.frame = screen;
+            self.window.windowLevel = UIWindowLevelAlert + 1000.0;
+            self.window.backgroundColor = [UIColor clearColor];
+            
+            UIViewController *vc = [[UIViewController alloc] init];
+            vc.view.backgroundColor = [UIColor clearColor];
+            [vc.view addSubview:self.container];
+            
+            self.window.rootViewController = vc;
+            self.window.hidden = NO;
+            self.isMounted = YES;
+        }
+
+        if (!self.isMounted) {
+            UIWindow *appWin = [SpeedDebugLogger findAppKeyWindow];
+            if (appWin && appWin.rootViewController.view) {
+                [appWin.rootViewController.view addSubview:self.container];
+                [appWin.rootViewController.view bringSubviewToFront:self.container];
+                self.isMounted = YES;
+            }
+        }
     });
 }
 
@@ -408,9 +437,9 @@ static double get_real_monotonic_seconds(void) {
     NSString *allText = [self.logLines componentsJoinedByString:@"\n"];
     [UIPasteboard generalPasteboard].string = allText;
 
-    self.statusBadge.text = @"✅ Copied!";
+    self.statusBadge.text = @"✅ Đã sao chép Log!";
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        self.statusBadge.text = @"⚡ Mechanism 2 | Active";
+        self.statusBadge.text = @"⚡ Cơ chế 1: Deep RN Text";
     });
 }
 
@@ -428,7 +457,7 @@ static double get_real_monotonic_seconds(void) {
 
 - (void)appendLog:(NSString *)log {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (self.logLines.count > 50) {
+        if (self.logLines.count > 60) {
             [self.logLines removeObjectAtIndex:0];
         }
         [self.logLines addObject:log];
@@ -444,42 +473,55 @@ static double get_real_monotonic_seconds(void) {
 @end
 
 // ==========================================
-// 4. GEOMETRY & TIME WATCHER (CƠ CHẾ 2)
+// 4. SMART WATCHER & ENGINE COUNTDOWN (CƠ CHẾ 1)
 // ==========================================
-@interface GeometryTimeWatcher : NSObject
+@interface SmartCountdownWatcher : NSObject
 @property (nonatomic, strong) dispatch_source_t monitorTimer;
-@property (nonatomic, weak) UIView *trackedOrderView;
-@property (nonatomic, assign) double orderDetectedTimestamp;
-@property (nonatomic, assign) CGFloat initialBarWidth;
+@property (nonatomic, weak) UIView *lockedCountdownView;
+@property (nonatomic, assign) NSInteger lastSeenSecond;
 @property (nonatomic, assign) BOOL isBurstActive;
 @property (nonatomic, assign) BOOL isCooldown;
-@property (nonatomic, assign) BOOL didTriggerForCurrentOrder;
-@property (nonatomic, assign) BOOL isWatcherRunning;
 
 + (instancetype)shared;
 - (void)startWatcher;
 @end
 
-@implementation GeometryTimeWatcher
+@implementation SmartCountdownWatcher
 
 + (instancetype)shared {
-    static GeometryTimeWatcher *inst = nil;
+    static SmartCountdownWatcher *inst = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        inst = [[GeometryTimeWatcher alloc] init];
-        inst.trackedOrderView = nil;
-        inst.orderDetectedTimestamp = 0.0;
-        inst.initialBarWidth = 0.0;
+        inst = [[SmartCountdownWatcher alloc] init];
+        inst.lockedCountdownView = nil;
+        inst.lastSeenSecond = -1;
         inst.isBurstActive = NO;
         inst.isCooldown = NO;
-        inst.didTriggerForCurrentOrder = NO;
-        inst.isWatcherRunning = NO;
     });
     return inst;
 }
 
-- (NSString *)extractTextSafely:(UIView *)view {
+- (NSInteger)parseSecondFromString:(NSString *)rawText {
+    if (!rawText || rawText.length == 0 || rawText.length > 8) return -1;
+    NSString *clean = [[rawText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+
+    clean = [clean stringByReplacingOccurrencesOfString:@"s" withString:@""];
+    clean = [clean stringByReplacingOccurrencesOfString:@"sec" withString:@""];
+    clean = [clean stringByReplacingOccurrencesOfString:@"giây" withString:@""];
+    clean = [clean stringByReplacingOccurrencesOfString:@":" withString:@""];
+    clean = [clean stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+
+    NSScanner *scanner = [NSScanner scannerWithString:clean];
+    NSInteger val = -1;
+    if ([scanner scanInteger:&val] && [scanner isAtEnd]) {
+        if (val >= 1 && val <= 10) return val;
+    }
+    return -1;
+}
+
+- (NSString *)deepExtractTextFromView:(UIView *)view {
     if (!view) return nil;
+
     @try {
         if ([view respondsToSelector:@selector(text)]) {
             #pragma clang diagnostic push
@@ -490,144 +532,190 @@ static double get_real_monotonic_seconds(void) {
                 return (NSString *)obj;
             }
         }
+
         if ([view respondsToSelector:@selector(attributedText)]) {
             #pragma clang diagnostic push
             #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
             id obj = [view performSelector:@selector(attributedText)];
             #pragma clang diagnostic pop
             if ([obj isKindOfClass:[NSAttributedString class]]) {
-                return [(NSAttributedString *)obj string];
+                NSString *str = [(NSAttributedString *)obj string];
+                if (str.length > 0) return str;
             }
         }
+
+        Class catLayerClass = NSClassFromString(@"CATextLayer");
+        if (catLayerClass && view.layer.sublayers) {
+            for (CALayer *sublayer in view.layer.sublayers) {
+                if ([sublayer isKindOfClass:catLayerClass]) {
+                    id stringObj = [sublayer valueForKey:@"string"];
+                    if ([stringObj isKindOfClass:[NSString class]]) {
+                        return (NSString *)stringObj;
+                    } else if ([stringObj isKindOfClass:[NSAttributedString class]]) {
+                        return [(NSAttributedString *)stringObj string];
+                    }
+                }
+            }
+        }
+
         if (view.accessibilityLabel.length > 0) return view.accessibilityLabel;
+        if (view.accessibilityValue.length > 0) return view.accessibilityValue;
     } @catch (__unused NSException *e) {}
+
     return nil;
 }
 
-- (UIView *)findSwipeOrderContainer:(UIView *)view depth:(NSInteger)depth {
-    if (!view || view.isHidden || view.alpha < 0.01 || depth > 25) return nil;
-    if ([SpeedDebugLogger shared].container && [view isDescendantOfView:[SpeedDebugLogger shared].container]) return nil;
+- (void)dumpDetailedHierarchyUnderOrderView:(UIView *)orderView {
+    static BOOL didDump = NO;
+    if (didDump) return;
+    didDump = YES;
 
-    NSString *content = [self extractTextSafely:view];
-    if (content.length > 0 && [content containsString:@"Vuốt để nhận đơn"]) {
-        return view;
+    [[SpeedDebugLogger shared] appendLog:@"--- [CHI TIẾT VIEW VUỐT ĐƠN] ---"];
+    [self recurseDump:orderView indent:@" "];
+    [[SpeedDebugLogger shared] appendLog:@"--------------------------------"];
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        didDump = NO;
+    });
+}
+
+- (void)recurseDump:(UIView *)v indent:(NSString *)indent {
+    if (!v) return;
+    NSString *txt = [self deepExtractTextFromView:v];
+    NSString *cls = NSStringFromClass([v class]);
+    CGRect f = v.frame;
+
+    if (txt.length > 0 || v.subviews.count > 0) {
+        NSString *line = [NSString stringWithFormat:@"%@[%@] W:%.0f H:%.0f -> \"%@\"",
+                          indent, cls, f.size.width, f.size.height, txt ?: @""];
+        [[SpeedDebugLogger shared] appendLog:line];
+    }
+
+    NSArray<UIView *> *safeSubviews = [v.subviews copy];
+    for (UIView *sub in safeSubviews) {
+        [self recurseDump:sub indent:[indent stringByAppendingString:@"  "]];
+    }
+}
+
+- (UIView *)inspectAndFindCountdownView:(UIView *)view depth:(NSInteger)depth {
+    if (!view || view.isHidden || view.alpha < 0.01 || depth > 25) return nil;
+    if ([view isDescendantOfView:[SpeedDebugLogger shared].container]) return nil;
+
+    NSString *content = [self deepExtractTextFromView:view];
+    if (content.length > 0) {
+        if ([content containsString:@"Vuốt để nhận đơn"]) {
+            [self dumpDetailedHierarchyUnderOrderView:view];
+        }
+
+        if (content.length <= 15) {
+            NSInteger sec = [self parseSecondFromString:content];
+            if (sec >= 1 && sec <= 10) {
+                NSString *logEntry = [NSString stringWithFormat:@"🎯 [%@] -> \"%@\" (sec: %ld)",
+                                      NSStringFromClass([view class]), content, (long)sec];
+                [[SpeedDebugLogger shared] appendLog:logEntry];
+
+                if (sec >= 3 && sec <= 8) {
+                    return view;
+                }
+            }
+        }
     }
 
     NSArray<UIView *> *safeSubviews = [view.subviews copy];
     for (UIView *sub in safeSubviews) {
-        UIView *found = [self findSwipeOrderContainer:sub depth:depth + 1];
+        UIView *found = [self inspectAndFindCountdownView:sub depth:depth + 1];
         if (found) return found;
     }
     return nil;
 }
 
-- (void)triggerSpeedBurstWithReason:(NSString *)reason {
-    if (self.isBurstActive || self.isCooldown || self.didTriggerForCurrentOrder) return;
+- (void)triggerSpeedBurst {
+    if (self.isBurstActive || self.isCooldown) return;
 
     self.isBurstActive = YES;
     self.isCooldown = YES;
-    self.didTriggerForCurrentOrder = YES;
 
     set_dynamic_speed(5.0f);
     [[SpeedDebugLogger shared] updateStatus:@"🔥 SPEED x5.0 (RUNNING)" isWarning:NO];
-    [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@">>> [TRIGGER] %@", reason]];
+    [[SpeedDebugLogger shared] appendLog:@">>> [TRIGGER] ĐÃ KÍCH HOẠT X5 TẠI GIÂY 3! <<<"];
 
-    // Tắt về 1.0x sau 2.0s
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         set_dynamic_speed(1.0f);
         self.isBurstActive = NO;
+        self.lockedCountdownView = nil;
+        self.lastSeenSecond = -1;
         [[SpeedDebugLogger shared] updateStatus:@"⚡ Speed: 1.0x | COOLDOWN" isWarning:YES];
-        [[SpeedDebugLogger shared] appendLog:@">>> [RESET] Returning to 1.0x"];
+        [[SpeedDebugLogger shared] appendLog:@">>> [RESET] Về tốc độ 1.0x gốc."];
     });
 
-    // Giải phóng cooldown sau 6s
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         self.isCooldown = NO;
-        [[SpeedDebugLogger shared] updateStatus:@"⚡ Mechanism 2 | Active" isWarning:NO];
+        [[SpeedDebugLogger shared] updateStatus:@"⚡ Cơ chế 1: Deep RN Text" isWarning:NO];
     });
 }
 
 - (void)tickCheck {
-    if (self.isBurstActive) return;
+    if (self.isBurstActive || self.isCooldown) return;
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (self.isBurstActive) return;
+        if (self.isBurstActive || self.isCooldown) return;
 
         if (![SpeedDebugLogger shared].isMounted) {
             [[SpeedDebugLogger shared] setupUI];
         }
 
-        UIWindow *win = [SpeedDebugLogger findKeyWindow];
-        if (!win) return;
-
-        @try {
-            // 1. Khi đang theo dõi đơn hàng
-            if (self.trackedOrderView) {
-                if (self.trackedOrderView.isHidden || !self.trackedOrderView.superview) {
-                    [[SpeedDebugLogger shared] appendLog:@"[CLOSED] Order dismissed."];
-                    self.trackedOrderView = nil;
-                    self.orderDetectedTimestamp = 0.0;
-                    self.initialBarWidth = 0.0;
-                    self.didTriggerForCurrentOrder = NO;
-                    return;
-                }
-
-                if (self.didTriggerForCurrentOrder) return;
-
-                double elapsed = get_real_monotonic_seconds() - self.orderDetectedTimestamp;
-                CGFloat currentWidth = self.trackedOrderView.superview ? self.trackedOrderView.superview.frame.size.width : self.trackedOrderView.frame.size.width;
-
-                if (elapsed < 5.0) {
-                    [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@"[TICK] %.2fs elapsed (remain ~%.1fs)",
-                                                          elapsed, (7.0 - elapsed > 0 ? 7.0 - elapsed : 0.0)]];
-                }
-
-                // A. Khớp tỷ lệ co giãn hình học (~3/7 thời gian)
-                if (self.initialBarWidth > 50.0 && currentWidth < self.initialBarWidth) {
-                    CGFloat ratio = currentWidth / self.initialBarWidth;
-                    if (ratio <= (3.0f / 7.0f) && ratio >= 0.20f) {
-                        [self triggerSpeedBurstWithReason:[NSString stringWithFormat:@"Geometry shrink reached %.1f%%", ratio * 100]];
-                        return;
-                    }
-                }
-
-                // B. Chốt mốc thời gian thực 4.0s (7s - 3s)
-                if (elapsed >= 4.0) {
-                    [self triggerSpeedBurstWithReason:@"Exact 4.0s offset reached (3s remaining)!"];
-                    return;
-                }
-
+        // Fast-path: Khi đã khóa View
+        if (self.lockedCountdownView) {
+            if (self.lockedCountdownView.isHidden || !self.lockedCountdownView.superview) {
+                self.lockedCountdownView = nil;
+                self.lastSeenSecond = -1;
                 return;
             }
 
-            // 2. Quét tìm đơn mới
-            UIView *found = [self findSwipeOrderContainer:win depth:0];
-            if (found) {
-                self.trackedOrderView = found;
-                self.orderDetectedTimestamp = get_real_monotonic_seconds();
-                self.didTriggerForCurrentOrder = NO;
+            NSString *txt = [self deepExtractTextFromView:self.lockedCountdownView];
+            NSInteger currentSec = [self parseSecondFromString:txt];
 
-                UIView *container = found.superview ?: found;
-                self.initialBarWidth = container.frame.size.width;
+            [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@"[FAST-READ] View đếm: %@", txt]];
 
-                [[SpeedDebugLogger shared] appendLog:@"------------------------------------"];
-                [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@"🎯 [ORDER DETECTED] Width: %.0f", self.initialBarWidth]];
-                [[SpeedDebugLogger shared] appendLog:@"⏳ Counting down to 3s mark (4.0s offset)..."];
-                [[SpeedDebugLogger shared] appendLog:@"------------------------------------"];
+            if (currentSec == 3) {
+                [self triggerSpeedBurst];
+            } else if (currentSec > 0) {
+                self.lastSeenSecond = currentSec;
+            } else {
+                self.lockedCountdownView = nil;
+                self.lastSeenSecond = -1;
             }
-        } @catch (__unused NSException *e) {}
+            return;
+        }
+
+        // Slow-path: Quét tìm view đếm ngược
+        UIWindow *win = [SpeedDebugLogger findAppKeyWindow];
+        if (!win) return;
+
+        UIView *found = [self inspectAndFindCountdownView:win depth:0];
+        if (found) {
+            NSString *txt = [self deepExtractTextFromView:found];
+            NSInteger sec = [self parseSecondFromString:txt];
+
+            if (sec == 3) {
+                self.lockedCountdownView = found;
+                [self triggerSpeedBurst];
+            } else if (sec > 3) {
+                self.lockedCountdownView = found;
+                self.lastSeenSecond = sec;
+                [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@">> [LOCKED] Khóa View (%@) tại số %ld <<",
+                                                      NSStringFromClass([found class]), (long)sec]];
+            }
+        }
     });
 }
 
 - (void)startWatcher {
-    if (self.isWatcherRunning) return;
-    self.isWatcherRunning = YES;
-
-    dispatch_queue_t queue = dispatch_queue_create("com.speedhack.geometrytime", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_t queue = dispatch_queue_create("com.speedhack.smartwatcher", DISPATCH_QUEUE_SERIAL);
     self.monitorTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
 
     dispatch_source_set_timer(self.monitorTimer,
-                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
                               (uint64_t)(0.12 * NSEC_PER_SEC),
                               (uint64_t)(0.02 * NSEC_PER_SEC));
 
@@ -657,8 +745,8 @@ static void initialize_smart_speedhack(void) {
     };
     rebind_symbols(rebindings, 3);
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[SpeedDebugLogger shared] setupUI];
-        [[GeometryTimeWatcher shared] startWatcher];
+        [[SmartCountdownWatcher shared] startWatcher];
     });
 }
