@@ -1,4 +1,4 @@
-name: Build iOS Dylib
+name: Build Countdown Speedhack Dylib
 
 on:
   push:
@@ -7,23 +7,30 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-latest
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
 
-    - name: Compile Dylib with Clang
-      run: |
-        clang -dynamiclib \
-        -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
-        -arch arm64 \
-        fishhook.c Speedhack.m \
-        -framework Foundation -framework CoreFoundation -framework UIKit \
-        -o Speedhack.dylib
+      - name: Set up Xcode Environment
+        run: sudo xcode-select -switch /Applications/Xcode.app/Contents/Developer
 
-    - name: Upload Dylib Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: Speedhack-Dylib
-        path: Speedhack.dylib
+      - name: Compile Speedhack Dylib
+        run: |
+          clang -dynamiclib \
+          -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
+          -arch arm64 \
+          -miphoneos-version-min=14.0 \
+          -fobjc-arc \
+          -Wno-deprecated-declarations \
+          Speedhack.m \
+          -framework Foundation -framework UIKit -framework CoreFoundation \
+          -o Speedhack.dylib
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Speedhack-dylib
+          path: Speedhack.dylib
+          retention-days: 7
