@@ -12,6 +12,7 @@
 #import <mach-o/loader.h>
 #import <mach-o/nlist.h>
 #import <os/lock.h>
+#import <QuartzCore/QuartzCore.h>
 
 #ifndef LC_SEGMENT_ARCH_DEPENDENT
 #ifdef __LP64__
@@ -22,7 +23,7 @@
 #endif
 
 // ==========================================
-// 1. EMBEDDED FISHHOOK IMPLEMENTATION
+// 1. EMBEDDED FISHHOOK
 // ==========================================
 #ifdef __LP64__
 typedef struct mach_header_64 mach_header_t;
@@ -288,9 +289,8 @@ static void swizzle_NSDate_methods(void) {
 }
 
 // ==========================================
-// 3. PASS-THROUGH OVERLAY LOGGER
+// 3. PASS-THROUGH DEBUG LOGGER
 // ==========================================
-
 @interface SpeedDebugLogger : NSObject
 @property (nonatomic, strong) UIWindow *window;
 @property (nonatomic, strong) UIView *container;
@@ -313,21 +313,14 @@ static void swizzle_NSDate_methods(void) {
 @implementation PassThroughWindow
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     SpeedDebugLogger *logger = [SpeedDebugLogger shared];
-    
     if (logger.btnCopy && !logger.btnCopy.isHidden) {
         CGPoint pt = [self convertPoint:point toView:logger.btnCopy];
-        if ([logger.btnCopy pointInside:pt withEvent:event]) {
-            return logger.btnCopy;
-        }
+        if ([logger.btnCopy pointInside:pt withEvent:event]) return logger.btnCopy;
     }
     if (logger.btnClear && !logger.btnClear.isHidden) {
         CGPoint pt = [self convertPoint:point toView:logger.btnClear];
-        if ([logger.btnClear pointInside:pt withEvent:event]) {
-            return logger.btnClear;
-        }
+        if ([logger.btnClear pointInside:pt withEvent:event]) return logger.btnClear;
     }
-    
-    // Mọi vị trí khác đều trả về nil để xuyên thấu xuống app
     return nil;
 }
 @end
@@ -384,10 +377,10 @@ static void swizzle_NSDate_methods(void) {
         CGRect screen = [UIScreen mainScreen].bounds;
 
         CGFloat pWidth = screen.size.width - 24;
-        CGFloat pHeight = 220;
+        CGFloat pHeight = 230;
 
         self.container = [[UIView alloc] initWithFrame:CGRectMake(12, 50, pWidth, pHeight)];
-        self.container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+        self.container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.88];
         self.container.layer.cornerRadius = 10;
         self.container.layer.borderWidth = 1.5;
         self.container.layer.borderColor = [UIColor colorWithRed:0.0 green:0.8 blue:1.0 alpha:0.9].CGColor;
@@ -395,9 +388,9 @@ static void swizzle_NSDate_methods(void) {
         self.container.userInteractionEnabled = YES;
 
         self.statusBadge = [[UILabel alloc] initWithFrame:CGRectMake(10, 6, pWidth - 140, 24)];
-        self.statusBadge.text = @"⚡ Speed: 1.0x | IDLE";
+        self.statusBadge.text = @"⚡ Cơ chế 1: Deep RN Text";
         self.statusBadge.textColor = [UIColor colorWithRed:0.2 green:1.0 blue:0.4 alpha:1.0];
-        self.statusBadge.font = [UIFont boldSystemFontOfSize:12];
+        self.statusBadge.font = [UIFont boldSystemFontOfSize:11];
         [self.container addSubview:self.statusBadge];
 
         self.btnCopy = [UIButton buttonWithType:UIButtonTypeCustom];
@@ -435,7 +428,6 @@ static void swizzle_NSDate_methods(void) {
             
             UIViewController *vc = [[UIViewController alloc] init];
             vc.view.backgroundColor = [UIColor clearColor];
-            vc.view.userInteractionEnabled = YES;
             [vc.view addSubview:self.container];
             
             self.window.rootViewController = vc;
@@ -451,10 +443,6 @@ static void swizzle_NSDate_methods(void) {
                 self.isMounted = YES;
             }
         }
-
-        if (self.isMounted) {
-            [self appendLog:@"[SYSTEM] Khởi tạo thành công. Đã bật cảm ứng xuyên thấu."];
-        }
     });
 }
 
@@ -464,7 +452,7 @@ static void swizzle_NSDate_methods(void) {
 
     self.statusBadge.text = @"✅ Đã sao chép Log!";
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        self.statusBadge.text = @"⚡ Speed: 1.0x | IDLE";
+        self.statusBadge.text = @"⚡ Cơ chế 1: Deep RN Text";
     });
 }
 
@@ -482,7 +470,7 @@ static void swizzle_NSDate_methods(void) {
 
 - (void)appendLog:(NSString *)log {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (self.logLines.count > 50) {
+        if (self.logLines.count > 60) {
             [self.logLines removeObjectAtIndex:0];
         }
         [self.logLines addObject:log];
@@ -498,7 +486,7 @@ static void swizzle_NSDate_methods(void) {
 @end
 
 // ==========================================
-// 4. SMART WATCHER & ENGINE COUNTDOWN
+// 4. ADVANCED REACT NATIVE EXTRACTOR (CƠ CHẾ 1)
 // ==========================================
 @interface SmartCountdownWatcher : NSObject
 @property (nonatomic, strong) dispatch_source_t monitorTimer;
@@ -544,41 +532,109 @@ static void swizzle_NSDate_methods(void) {
     return -1;
 }
 
-- (NSString *)extractTextFromView:(UIView *)view {
+// Bóc tách đa tầng: text, attributedText, CATextLayer, Accessibility
+- (NSString *)deepExtractTextFromView:(UIView *)view {
     if (!view) return nil;
+
+    // 1. Selector text thông thường
     if ([view respondsToSelector:@selector(text)]) {
         #pragma clang diagnostic push
         #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-        NSString *txt = [view performSelector:@selector(text)];
+        id obj = [view performSelector:@selector(text)];
         #pragma clang diagnostic pop
-        if ([txt isKindOfClass:[NSString class]] && txt.length > 0) return txt;
+        if ([obj isKindOfClass:[NSString class]] && [(NSString *)obj length] > 0) {
+            return (NSString *)obj;
+        }
     }
-    if ([view respondsToSelector:@selector(title)]) {
+
+    // 2. React Native AttributedText (RCTTextView, Fabric Text Component)
+    if ([view respondsToSelector:@selector(attributedText)]) {
         #pragma clang diagnostic push
         #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-        NSString *title = [view performSelector:@selector(title)];
+        id obj = [view performSelector:@selector(attributedText)];
         #pragma clang diagnostic pop
-        if ([title isKindOfClass:[NSString class]] && title.length > 0) return title;
+        if ([obj isKindOfClass:[NSAttributedString class]]) {
+            NSString *str = [(NSAttributedString *)obj string];
+            if (str.length > 0) return str;
+        }
     }
+
+    // 3. CATextLayer sublayers (vẽ trực tiếp lên layer)
+    if (view.layer.sublayers) {
+        for (CALayer *sublayer in view.layer.sublayers) {
+            if ([sublayer isKindOfClass:[CATextLayer class]]) {
+                id stringObj = ((CATextLayer *)sublayer).string;
+                if ([stringObj isKindOfClass:[NSString class]]) {
+                    return (NSString *)stringObj;
+                } else if ([stringObj isKindOfClass:[NSAttributedString class]]) {
+                    return [(NSAttributedString *)stringObj string];
+                }
+            }
+        }
+    }
+
+    // 4. Accessibility
     if (view.accessibilityLabel.length > 0) return view.accessibilityLabel;
     if (view.accessibilityValue.length > 0) return view.accessibilityValue;
+
     return nil;
+}
+
+// Khi phát hiện khu vực "Vuốt để nhận đơn", soi chi tiết từng phần tử con
+- (void)dumpDetailedHierarchyUnderOrderView:(UIView *)orderView {
+    static BOOL didDump = NO;
+    if (didDump) return;
+    didDump = YES;
+
+    [[SpeedDebugLogger shared] appendLog:@"--- [CHI TIẾT VIEW VUỐT ĐƠN] ---"];
+    [self recurseDump:orderView indent:@" "];
+    [[SpeedDebugLogger shared] appendLog:@"--------------------------------"];
+    
+    // Reset dump sau 10 giây để sẵn sàng cho đơn sau
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        didDump = NO;
+    });
+}
+
+- (void)recurseDump:(UIView *)v indent:(NSString *)indent {
+    if (!v) return;
+    NSString *txt = [self deepExtractTextFromView:v];
+    NSString *cls = NSStringFromClass([v class]);
+    CGRect f = v.frame;
+
+    if (txt.length > 0 || v.subviews.count > 0) {
+        NSString *line = [NSString stringWithFormat:@"%@[%@] W:%.0f H:%.0f -> \"%@\"",
+                          indent, cls, f.size.width, f.size.height, txt ?: @""];
+        [[SpeedDebugLogger shared] appendLog:line];
+    }
+
+    for (UIView *sub in v.subviews) {
+        [self recurseDump:sub indent:[indent stringByAppendingString:@"  "]];
+    }
 }
 
 - (UIView *)inspectAndFindCountdownView:(UIView *)view depth:(NSInteger)depth {
     if (!view || view.isHidden || view.alpha < 0.01 || depth > 25) return nil;
     if ([view isDescendantOfView:[SpeedDebugLogger shared].container]) return nil;
 
-    NSString *content = [self extractTextFromView:view];
-    if (content.length > 0 && content.length <= 20) {
-        NSInteger sec = [self parseSecondFromString:content];
-        
-        NSString *className = NSStringFromClass([view class]);
-        NSString *logEntry = [NSString stringWithFormat:@"[%@] -> \"%@\" (sec: %ld)", className, content, (long)sec];
-        [[SpeedDebugLogger shared] appendLog:logEntry];
+    NSString *content = [self deepExtractTextFromView:view];
+    if (content.length > 0) {
+        // Nếu bắt được "Vuốt để nhận đơn", lập tức bóc tách chi tiết toàn bộ node con của nó
+        if ([content containsString:@"Vuốt để nhận đơn"]) {
+            [self dumpDetailedHierarchyUnderOrderView:view];
+        }
 
-        if (sec >= 3 && sec <= 8) {
-            return view;
+        if (content.length <= 15) {
+            NSInteger sec = [self parseSecondFromString:content];
+            if (sec >= 1 && sec <= 10) {
+                NSString *logEntry = [NSString stringWithFormat:@"🎯 [%@] -> \"%@\" (sec: %ld)",
+                                      NSStringFromClass([view class]), content, (long)sec];
+                [[SpeedDebugLogger shared] appendLog:logEntry];
+
+                if (sec >= 3 && sec <= 8) {
+                    return view;
+                }
+            }
         }
     }
 
@@ -597,7 +653,7 @@ static void swizzle_NSDate_methods(void) {
 
     set_dynamic_speed(5.0f);
     [[SpeedDebugLogger shared] updateStatus:@"🔥 SPEED x5.0 (RUNNING)" isWarning:NO];
-    [[SpeedDebugLogger shared] appendLog:@">>> [TRIGGER] ĐÃ BẬT X5 TẠI GIÂY 3! <<<"];
+    [[SpeedDebugLogger shared] appendLog:@">>> [TRIGGER] ĐÃ KÍCH HOẠT X5 TẠI GIÂY 3! <<<"];
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         set_dynamic_speed(1.0f);
@@ -610,7 +666,7 @@ static void swizzle_NSDate_methods(void) {
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         self.isCooldown = NO;
-        [[SpeedDebugLogger shared] updateStatus:@"⚡ Speed: 1.0x | IDLE" isWarning:NO];
+        [[SpeedDebugLogger shared] updateStatus:@"⚡ Cơ chế 1: Deep RN Text" isWarning:NO];
     });
 }
 
@@ -624,16 +680,15 @@ static void swizzle_NSDate_methods(void) {
             [[SpeedDebugLogger shared] setupUI];
         }
 
-        // FAST-PATH: Nếu đã khóa View mục tiêu
+        // FAST-PATH: Nếu đã khóa mục tiêu
         if (self.lockedCountdownView) {
             if (self.lockedCountdownView.isHidden || !self.lockedCountdownView.superview) {
-                [[SpeedDebugLogger shared] appendLog:@"[LOCK LOST] View đếm đã biến mất."];
                 self.lockedCountdownView = nil;
                 self.lastSeenSecond = -1;
                 return;
             }
 
-            NSString *txt = [self extractTextFromView:self.lockedCountdownView];
+            NSString *txt = [self deepExtractTextFromView:self.lockedCountdownView];
             NSInteger currentSec = [self parseSecondFromString:txt];
 
             [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@"[FAST-READ] View đếm: %@", txt]];
@@ -655,7 +710,7 @@ static void swizzle_NSDate_methods(void) {
 
         UIView *found = [self inspectAndFindCountdownView:win depth:0];
         if (found) {
-            NSString *txt = [self extractTextFromView:found];
+            NSString *txt = [self deepExtractTextFromView:found];
             NSInteger sec = [self parseSecondFromString:txt];
 
             if (sec == 3) {
@@ -664,7 +719,8 @@ static void swizzle_NSDate_methods(void) {
             } else if (sec > 3) {
                 self.lockedCountdownView = found;
                 self.lastSeenSecond = sec;
-                [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@">> [LOCKED] Khóa View (%@) tại số %ld <<", NSStringFromClass([found class]), (long)sec]];
+                [[SpeedDebugLogger shared] appendLog:[NSString stringWithFormat:@">> [LOCKED] Khóa View (%@) tại số %ld <<",
+                                                      NSStringFromClass([found class]), (long)sec]];
             }
         }
     });
